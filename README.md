@@ -1,74 +1,109 @@
-# VisualSyslog
+# VisualSyslog — Syslog Observability
 
-Coletor Syslog multiplataforma, reimplementado em Python, com painel web local e armazenamento SQLite. O projeto original foi criado por Max Belkov e publicado sob GPL-2.0; este fork mantém essa licença. Consulte `NOTICE` para o histórico e a atribuição do projeto de origem.
+**Versão atual / Current version: 2.6.0** · Licença / License: **GPL-2.0**
 
-## Recursos da versão 2.6.0
+[Português (Brasil)](#português-brasil) | [English](#english) | [Baixar versão 2.6.0 / Download v2.6.0](https://github.com/cyberlinkrv/visualsyslog/releases/tag/v2.6.0)
 
-A 2.6.0 parte da versão funcional 2.5.3 e preserva o banco SQLite existente. O painel usa contadores incrementais; a busca textual usa FTS5, indexada em lotes retomáveis em segundo plano. Na primeira abertura de um banco antigo, o painel e a coleta continuam ativos e a interface mostra o progresso; somente a busca e a limpeza de retenção aguardam o término para não travar nem corromper a migração. Essa atualização usa CPU, disco e espaço adicional no próprio arquivo `.db` enquanto cria o índice.
+![Painel do VisualSyslog 2.6.0 / VisualSyslog 2.6.0 dashboard](docs/images/visualsyslog-dashboard-2.6.0.png)
 
-- Recebe mensagens por UDP e TCP; interpreta o PRI e campos comuns de RFC 3164 e RFC 5424.
-- Painel responsivo em português e inglês, com atualização contínua e busca avançada em janela própria. Os termos sem aspas são combinados (AND), frases podem ser colocadas entre aspas e IPs/portas são comparados em limites exatos; os resultados são paginados.
-- Armazena eventos em SQLite com índices para data, host, severidade e texto (FTS5). Não requer serviço externo de banco de dados; a consulta do painel não recalcula os totais percorrendo toda a tabela a cada atualização.
-- Retenção deslizante padrão de 1.095 dias (três anos), configurável no painel até 36.500 dias. A limpeza executa na inicialização e a cada hora. A expiração é baseada no instante de recebimento.
-- Configuração pela interface das portas Syslog UDP e TCP, com atualização imediata e persistência após reiniciar.
-- Migração do banco para outro disco pela interface. O banco é copiado de forma consistente, o destino passa a ser usado e o arquivo anterior é removido após a migração; não é mantido backup.
-- O banco contém timestamps e índices de data; os registros vencidos são removidos automaticamente. Não são gerados arquivos TXT nem um arquivo físico por dia.
+---
 
-## Inicialização e diagnóstico
+## Português (Brasil)
 
-O painel só é aberto no navegador depois de responder na porta HTTP. Builds Windows sem console registram saída em `%LOCALAPPDATA%\VisualSyslog\logs\visualsyslog-startup.log` e mostram uma mensagem se falharem na inicialização. O workflow executa um smoke test do executável Windows empacotado antes de criar o instalador.
+O **VisualSyslog** recebe mensagens Syslog por UDP e TCP e as apresenta em um painel web local. Armazena os eventos em SQLite, permite pesquisar mensagens e configurar retenção e rede pela interface.
 
-## Segurança do instalador Windows
+### Baixar a versão 2.6.0
 
-A versão 2.6.0 é compilada sem UPX, pois compactadores podem contribuir para detecções heurísticas. O executável não possui assinatura digital de código. Por isso, esta mudança reduz um fator de falso positivo, mas não garante que o Microsoft Defender ou outros antivírus aprovem o arquivo; valide-o antes de distribuir em ambientes de produção. Não restaure nem permita a versão 2.5.1 que foi detectada.
+| Sistema | Download | Instalação/uso |
+|---|---|---|
+| Windows — instalador recomendado | [VisualSyslog-Setup.exe](https://github.com/cyberlinkrv/visualsyslog/releases/download/v2.6.0/VisualSyslog-Setup.exe) | Execute o instalador e siga as instruções. |
+| Windows — portátil | [VisualSyslog.exe](https://github.com/cyberlinkrv/visualsyslog/releases/download/v2.6.0/VisualSyslog.exe) | Execute sem instalar. |
+| Debian/Ubuntu — 64 bits (amd64) | [visualsyslog_2.6.0_amd64.deb](https://github.com/cyberlinkrv/visualsyslog/releases/download/v2.6.0/visualsyslog_2.6.0_amd64.deb) | `sudo apt install ./visualsyslog_2.6.0_amd64.deb` |
+| Todos os arquivos e verificações | [Release 2.6.0 e SHA-256](https://github.com/cyberlinkrv/visualsyslog/releases/tag/v2.6.0) | A página contém todos os downloads e `SHA256SUMS.txt`. |
 
-## Executar a partir do código
+Depois de iniciar, abra **http://127.0.0.1:8080**. Por padrão, o coletor escuta Syslog em **UDP e TCP na porta 5514**; IP, portas e demais opções podem ser alterados em **Configurações**.
 
-Requer Python 3.10 ou superior.
+### O que há na versão 2.6.0
+
+- Painel responsivo em português brasileiro e inglês dos Estados Unidos.
+- Busca textual FTS5, com termos combinados, frases entre aspas e paginação.
+- Contadores incrementais para evitar percorrer toda a tabela a cada atualização do painel.
+- Banco SQLite local, sem necessidade de instalar ou administrar um servidor de banco separado.
+- Retenção padrão de **1.095 dias (três anos)**, ajustável pela interface.
+- Configuração de caminho do banco, IP de escuta, portas UDP/TCP e idioma. No Windows, há também a opção de iniciar junto com a sessão do usuário.
+
+**Ao abrir pela primeira vez um banco antigo:** a 2.6.0 preserva os dados existentes e prepara os contadores e o índice de busca em segundo plano, em lotes que podem continuar após reiniciar o aplicativo. A coleta e o painel permanecem ativos; somente a busca textual e a limpeza de retenção aguardam o fim dessa preparação. O índice acrescenta espaço ao próprio arquivo `.db`; não cria um segundo banco permanente.
+
+### Aviso de segurança do Windows
+
+Os executáveis Windows não possuem assinatura digital Authenticode. O instalador foi compilado sem UPX e passou pelo smoke test do Windows CI, mas isso **não garante** que o Microsoft Defender ou outro antivírus deixará de exibir um alerta. A reputação pode variar entre computadores; confira o arquivo e seu SHA-256 antes de distribuir em ambientes de produção.
+
+### Compilar a partir do código-fonte
+
+Requer Python 3.10 ou superior. Para desenvolvimento e testes:
 
 ```bash
 python -m venv .venv
 # Linux/macOS
 . .venv/bin/activate
 # Windows PowerShell: .venv\Scripts\Activate.ps1
-python -m pip install -e .
-visualsyslog
-```
-
-O painel abre em `http://127.0.0.1:8080`. O coletor escuta UDP e TCP na porta 5514, associado por padrão ao IP local que o sistema seleciona para a rota padrão. A porta 514 pode ser selecionada explicitamente, mas em Linux normalmente requer privilégios especiais; recomenda-se usar 5514 ou encaminhar a porta 514 pelo firewall/roteador.
-
-```bash
-visualsyslog --udp-port 5514 --tcp-port 5514 --web-port 8080
-visualsyslog --syslog-host 0.0.0.0 --web-host 0.0.0.0 --no-browser
-```
-
-**Atenção:** publicar o painel em `0.0.0.0` expõe a interface na rede local e o aplicativo ainda não inclui autenticação. Use `127.0.0.1` (padrão), ou proteja a rede antes de expor em uma rede não confiável.
-
-## Dados e retenção
-
-Por padrão, o banco fica em `%LOCALAPPDATA%\VisualSyslog\visualsyslog.db` no Windows e em `~/.local/share/visualsyslog/visualsyslog.db` no Linux. `VISUALSYSLOG_DATA_DIR` define outra pasta, por exemplo para volume dedicado. Preserve essa pasta em backups; SQLite em modo WAL pode manter arquivos `-wal`/`-shm` enquanto o aplicativo estiver aberto.
-
-Defina a retenção na interface. O prazo conta dias corridos a partir do recebimento; valores maiores preservam eventos por mais tempo. Três anos são aproximados por 1.095 dias.
-
-## Build e instaladores
-
-O workflow de release em `.github/workflows/build.yml` gera artefatos para Windows e Linux. No Windows, PyInstaller cria o executável e Inno Setup o empacota em instalador `.exe`. No Ubuntu, o build produz executável portátil e pacote `.deb`. Os artefatos são rascunhos de distribuição e devem ser validados em máquinas limpas de cada sistema antes de produção.
-
-Para build local, instale o extra `.[build]` e execute `pyinstaller packaging/visualsyslog.spec`. Linux: `bash packaging/build_deb.sh`. O Inno Setup pode compilar `packaging/visualsyslog.iss` no Windows.
-
-## Compatibilidade e escopo
-
-Esta é uma primeira versão de modernização, não uma migração de configurações, mensagens ou funções avançadas do aplicativo legado. Alertas por e-mail, regras de ação, notificações, importação de logs históricos e serviço de sistema ainda não foram reimplementados. TCP trata uma linha por mensagem; framing octet-counted RFC 6587 e parsing completo de datas/estruturas RFC 5424 ainda precisam de trabalho. O formato SQLite é novo e independente dos arquivos históricos TXT.
-
-## Desenvolvimento e testes
-
-```bash
 python -m pip install -e '.[test]'
-pytest
+pytest -q
 ```
 
-Contribuições são bem-vindas. Mudanças redistribuídas devem seguir os termos da GPL-2.0.
+Para executar a partir do código, instale com `python -m pip install -e .` e rode `visualsyslog`. Para gerar os pacotes, use PyInstaller e os scripts em `packaging/`; o workflow em `.github/workflows/build.yml` automatiza os testes e builds Windows/Linux.
 
-## Configurações pela interface (versão 2.5)
+### Projeto e licença
 
-No botão **Configurações**, é possível mudar o IP de escuta, as portas UDP e TCP, o prazo de retenção e o idioma (português do Brasil ou inglês dos Estados Unidos). No Windows, há também uma opção para iniciar o coletor ao entrar na conta, sem abrir automaticamente o navegador nem uma janela de prompt. Por padrão, o modo **Automático** identifica a cada inicialização o endereço IPv4 local escolhido pelo sistema para a rota padrão. No modo **Manual**, você pode escolher e persistir outro IP atribuído à máquina; `0.0.0.0` continua disponível caso queira escutar em todas as interfaces. Um IP inválido ou não atribuído é rejeitado sem substituir o listener atual. Se o IP manual salvo deixar de existir, o aplicativo inicia no IP padrão atual e exibe um aviso para corrigir a configuração. Para transferir o banco para outro disco, informe o caminho completo do novo arquivo, por exemplo `D:\\VisualSyslog\\visualsyslog.db`, e selecione **Mover banco**. O aplicativo copia o banco de forma consistente enquanto está aberto, ativa o arquivo no novo local e remove o arquivo anterior após a migração. Não mantém uma cópia de backup. O destino não pode existir previamente. Se o disco configurado ficar indisponível, os logs não são gravados em outro arquivo local; a interface mostra um aviso até que o banco seja configurado novamente. Mantenha o disco disponível e com espaço livre; se o caminho salvo não estiver acessível na próxima inicialização, o painel destaca o problema e mostra o caminho configurado para facilitar a correção. As configurações permanecem após reiniciar o aplicativo.
+Esta modernização em Python é um fork do VisualSyslog original de Max Belkov. Mantém a licença GPL-2.0; veja `NOTICE` para a atribuição e o histórico. Contribuições são bem-vindas.
+
+---
+
+## English
+
+**VisualSyslog** receives Syslog messages over UDP and TCP and displays them in a local web dashboard. Events are stored in SQLite, with message search, configurable retention, and network settings available in the UI.
+
+### Download version 2.6.0
+
+| Platform | Download | Install/use |
+|---|---|---|
+| Windows — recommended installer | [VisualSyslog-Setup.exe](https://github.com/cyberlinkrv/visualsyslog/releases/download/v2.6.0/VisualSyslog-Setup.exe) | Run the installer and follow the prompts. |
+| Windows — portable | [VisualSyslog.exe](https://github.com/cyberlinkrv/visualsyslog/releases/download/v2.6.0/VisualSyslog.exe) | Run without installing. |
+| Debian/Ubuntu — 64-bit (amd64) | [visualsyslog_2.6.0_amd64.deb](https://github.com/cyberlinkrv/visualsyslog/releases/download/v2.6.0/visualsyslog_2.6.0_amd64.deb) | `sudo apt install ./visualsyslog_2.6.0_amd64.deb` |
+| All files and verification | [Release 2.6.0 and SHA-256](https://github.com/cyberlinkrv/visualsyslog/releases/tag/v2.6.0) | The release page includes all downloads and `SHA256SUMS.txt`. |
+
+After launch, open **http://127.0.0.1:8080**. By default, the collector listens for Syslog over **UDP and TCP on port 5514**. Change the bind IP, ports, and other options in **Settings**.
+
+### What's new in 2.6.0
+
+- Responsive dashboard in Brazilian Portuguese and US English.
+- FTS5 text search with AND terms, quoted phrases, and paginated results.
+- Incremental counters avoid rescanning the full messages table on every dashboard refresh.
+- Local SQLite storage; no separate database server is required.
+- Default retention of **1,095 days (three years)**, adjustable in the UI.
+- Configure the database path, bind IP, UDP/TCP ports, and language. Windows also supports starting automatically when the user signs in.
+
+**First launch with an existing database:** version 2.6.0 preserves existing data and prepares counters and the search index in the background, in batches that resume after an application restart. Log collection and the dashboard remain active; only text search and retention cleanup wait for preparation to finish. The index uses additional space inside the same `.db` file; no permanent second database is created.
+
+### Windows security notice
+
+The Windows binaries are not Authenticode code-signed. The installer is built without UPX and passed the Windows CI smoke test, but this **does not guarantee** that Microsoft Defender or another antivirus will never show an alert. Reputation can vary between computers; verify the file and its SHA-256 before distributing it in production environments.
+
+### Build from source
+
+Python 3.10 or newer is required. For development and tests:
+
+```bash
+python -m venv .venv
+# Linux/macOS
+. .venv/bin/activate
+# Windows PowerShell: .venv\Scripts\Activate.ps1
+python -m pip install -e '.[test]'
+pytest -q
+```
+
+To run from source, install with `python -m pip install -e .` and run `visualsyslog`. PyInstaller and the scripts in `packaging/` build the distribution packages; `.github/workflows/build.yml` automates tests and Windows/Linux builds.
+
+### Project and license
+
+This Python modernization is a fork of Max Belkov's original VisualSyslog. It retains the GPL-2.0 license; see `NOTICE` for attribution and project history. Contributions are welcome.
