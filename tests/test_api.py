@@ -172,3 +172,16 @@ def test_search_api_returns_precise_message_matches(tmp_path):
         assert "10.20.30.40" in data["items"][0]["message"]
         assert client.get("/api/messages", params={"search": '"connection from 10.20.30.40"'}).json()["total"] == 1
         assert client.get("/api/messages", params={"search": "x" * 201}).status_code == 422
+
+
+def test_search_results_modal_supports_refinement_and_loading_state(tmp_path):
+    app = create_app(data_dir=tmp_path, udp_host="127.0.0.1", udp_port=0,
+                     tcp_host="127.0.0.1", tcp_port=0)
+    with TestClient(app) as client:
+        page = client.get("/")
+        assert page.status_code == 200
+        assert 'id="searchModalInput"' in page.text
+        assert 'id="searchModalButton"' in page.text
+        assert 'id="searchLoading"' in page.text
+        assert 'aria-live="polite"' in page.text
+        assert "animation:search-spin" in page.text

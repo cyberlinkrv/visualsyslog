@@ -2,7 +2,7 @@
 
 Coletor Syslog multiplataforma, reimplementado em Python, com painel web local e armazenamento SQLite. O projeto original foi criado por Max Belkov e publicado sob GPL-2.0; este fork mantém essa licença. Consulte `NOTICE` para o histórico e a atribuição do projeto de origem.
 
-## Recursos da versão 2.5.0
+## Recursos da versão 2.5.1
 
 - Recebe mensagens por UDP e TCP; interpreta o PRI e campos comuns de RFC 3164 e RFC 5424.
 - Painel responsivo em português e inglês, com atualização contínua e busca avançada em janela própria. Os termos sem aspas são combinados (AND), frases podem ser colocadas entre aspas e IPs/portas são comparados em limites exatos; os resultados são paginados.
