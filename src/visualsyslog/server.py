@@ -115,6 +115,11 @@ def create_app(data_dir: Path | str | None = None, udp_host: str | None = None, 
 
         async def maintenance():
             while True:
+                index_status = store.search_index_status()
+                if (not store.performance_metrics_ready or
+                        (index_status["available"] and not index_status["ready"])):
+                    await asyncio.sleep(1)
+                    continue
                 await asyncio.to_thread(store.purge_expired)
                 await asyncio.sleep(3600)
 
@@ -130,7 +135,7 @@ def create_app(data_dir: Path | str | None = None, udp_host: str | None = None, 
                 await app.state.maintenance_task
             store.close()
 
-    app = FastAPI(title="VisualSyslog", version="2.5.0", lifespan=lifespan)
+    app = FastAPI(title="VisualSyslog", version="2.6.0", lifespan=lifespan)
     app.state.store = store
     app.state.config_file = config_file
     app.state.bind_ip = bind_ip
@@ -163,6 +168,13 @@ def create_app(data_dir: Path | str | None = None, udp_host: str | None = None, 
     @app.get("/api/messages")
     async def messages(limit: int = Query(200, ge=1, le=1000), offset: int = Query(0, ge=0),
                        search: str = Query("", max_length=200), severity: int | None = Query(None, ge=0, le=7)):
+        index_status = store.search_index_status()
+        if search.strip() and index_status["available"] and not index_status["ready"]:
+            if saved.get("language", "pt-BR") == "en-US":
+                detail = f"The fast search index is still being prepared ({index_status['progress']}%). Try again shortly."
+            else:
+                detail = f"O índice rápido de busca está sendo preparado ({index_status['progress']}%). Tente novamente em instantes."
+            raise HTTPException(status_code=503, detail=detail)
         rows, total = store.list_messages(limit, offset, search, severity)
         return {"items": rows, "total": total}
 

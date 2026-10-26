@@ -10,8 +10,11 @@ def test_dashboard_and_retention_api(tmp_path):
         page = client.get("/")
         assert page.status_code == 200
         assert "VisualSyslog" in page.text
+        assert "VisualSyslog 2.6.0" in page.text
         stats = client.get("/api/stats").json()
         assert stats["retention_days"] == 1095
+        assert stats["performance_ready"] is True
+        assert stats["search_index"]["available"] is True
         assert stats["listeners"]["udp"].endswith(":0")
         result = client.put("/api/settings", json={"retention_days": 2500})
         assert result.status_code == 200
@@ -174,10 +177,63 @@ def test_search_api_returns_precise_message_matches(tmp_path):
         assert client.get("/api/messages", params={"search": "x" * 201}).status_code == 422
 
 
-def test_dashboard_footer_displays_version_250(tmp_path):
+def test_search_results_modal_supports_refinement_and_loading_state(tmp_path):
     app = create_app(data_dir=tmp_path, udp_host="127.0.0.1", udp_port=0,
                      tcp_host="127.0.0.1", tcp_port=0)
     with TestClient(app) as client:
         page = client.get("/")
         assert page.status_code == 200
-        assert "By Divino J. Silva - Rio Verde - GO Brasil · VisualSyslog 2.5.0" in page.text
+        assert 'id="searchModalInput"' in page.text
+        assert 'id="searchModalButton"' in page.text
+        assert 'id="searchLoading"' in page.text
+        assert 'aria-live="polite"' in page.text
+        assert "animation:search-spin" in page.text
+
+
+def test_browser_opens_only_after_dashboard_is_ready(monkeypatch):
+    import threading
+    from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+    from unittest.mock import Mock
+
+    from visualsyslog import __main__ as entrypoint
+
+    class Handler(BaseHTTPRequestHandler):
+        def do_GET(self):
+            self.send_response(200)
+            self.end_headers()
+            self.wfile.write(b"ready")
+
+        def log_message(self, *_args):
+            pass
+
+    server = ThreadingHTTPServer(("127.0.0.1", 0), Handler)
+    thread = threading.Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+    open_browser = Mock()
+    monkeypatch.setattr(entrypoint.webbrowser, "open", open_browser)
+    try:
+        entrypoint._open_browser_when_ready("0.0.0.0", server.server_address[1], timeout=1)
+        open_browser.assert_called_once_with(f"http://127.0.0.1:{server.server_address[1]}")
+    finally:
+        server.shutdown()
+        server.server_close()
+        thread.join(timeout=2)
+
+
+def test_windowed_build_uses_readable_browser_url_for_ipv6():
+    from visualsyslog import __main__ as entrypoint
+
+    assert entrypoint._panel_url("::", 8080) == "http://127.0.0.1:8080"
+    assert entrypoint._panel_url("::1", 8080) == "http://[::1]:8080"
+
+
+
+def test_search_api_reports_when_fts_index_is_building(tmp_path):
+    app = create_app(data_dir=tmp_path, udp_host="127.0.0.1", udp_port=0,
+                     tcp_host="127.0.0.1", tcp_port=0)
+    with TestClient(app) as client:
+        app.state.store._set_index_state(ready=False, progress=42)
+        response = client.get("/api/messages", params={"search": "192.0.2.10"})
+        assert response.status_code == 503
+        assert "42%" in response.json()["detail"]
+        app.state.store._set_index_state(ready=True, progress=100)

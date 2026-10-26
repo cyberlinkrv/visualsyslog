@@ -88,3 +88,100 @@ def test_search_paginates_sorted_results(tmp_path):
     assert len(first) == 50 and len(second) == 5
     assert first[0]["id"] > second[0]["id"]
     store.close()
+
+
+
+def test_dashboard_stats_reuse_incremental_counters(tmp_path):
+    store = LogStore(tmp_path / "fast-stats.db")
+    store.insert(parse_syslog("first", "10.10.10.1", "UDP"))
+    store.insert(parse_syslog("second", "10.10.10.1", "TCP"))
+    store.insert(parse_syslog("third", "11.11.11.1", "UDP"))
+    assert store.stats()["total"] == 3
+    assert store.stats()["hosts"] == 2
+    statements = []
+    store.db.set_trace_callback(statements.append)
+    for _ in range(5):
+        assert store.stats()["total"] == 3
+    store.db.set_trace_callback(None)
+    assert not any("COUNT(*) FROM messages" in sql or "COUNT(DISTINCT source_ip)" in sql
+                   for sql in statements)
+    store.close()
+
+
+def test_expiration_updates_incremental_message_and_host_counters(tmp_path):
+    store = LogStore(tmp_path / "fast-purge.db", retention_days=1)
+    store.insert(parse_syslog("old host", "10.0.0.1", "UDP"))
+    old = (datetime.now(timezone.utc) - timedelta(days=2)).isoformat(timespec="milliseconds")
+    with store.db:
+        store.db.execute("UPDATE messages SET received_at=?", (old,))
+    assert store.stats()["total"] == 1
+    assert store.stats()["hosts"] == 1
+    assert store.purge_expired() == 1
+    assert store.stats()["total"] == 0
+    assert store.stats()["hosts"] == 0
+    store.close()
+
+
+def test_legacy_database_builds_resumable_fts_index(tmp_path):
+    import sqlite3
+    import time
+
+    path = tmp_path / "legacy.db"
+    db = sqlite3.connect(path)
+    db.executescript("""
+        CREATE TABLE messages (
+            id INTEGER PRIMARY KEY AUTOINCREMENT, received_at TEXT NOT NULL, event_at TEXT,
+            facility INTEGER, severity INTEGER, hostname TEXT, app_name TEXT,
+            source_ip TEXT NOT NULL, protocol TEXT NOT NULL, message TEXT NOT NULL, raw TEXT NOT NULL
+        );
+        CREATE TABLE settings (key TEXT PRIMARY KEY, value TEXT NOT NULL);
+    """)
+    for i in range(50):
+        text = f"legacy firewall connection from 192.0.2.{i} port 514"
+        db.execute("INSERT INTO messages(received_at,source_ip,protocol,message,raw) VALUES(?,?,?,?,?)",
+                   (datetime.now(timezone.utc).isoformat(timespec="milliseconds"), "10.0.0.1", "UDP", text, text))
+    db.commit()
+    db.close()
+
+    store = LogStore(path)
+    store.insert(parse_syslog("live record port 5514", "10.0.0.2", "UDP"))
+    deadline = time.monotonic() + 5
+    while not store.search_index_status()["ready"] and time.monotonic() < deadline:
+        time.sleep(0.01)
+    assert store.search_index_status()["ready"] is True
+    assert store.performance_metrics_ready is True
+    assert store.stats()["total"] == 51
+    assert store.stats()["hosts"] == 2
+    rows, total = store.list_messages(search="192.0.2.17 514")
+    assert total == 1
+    assert "192.0.2.17" in rows[0]["message"]
+    assert store.list_messages(search="live 5514")[1] == 1
+    store.close()
+
+
+
+def test_search_uses_fts5_instead_of_regex_full_scan(tmp_path):
+    store = LogStore(tmp_path / "fts-search.db")
+    store.insert(parse_syslog("connection from 192.0.2.11 port 514", "10.0.0.5", "UDP"))
+    assert store.search_index_status()["ready"] is True
+    statements = []
+    store.db.set_trace_callback(statements.append)
+    rows, total = store.list_messages(search="192.0.2.11 514")
+    store.db.set_trace_callback(None)
+    assert total == 1 and len(rows) == 1
+    assert any("messages_fts MATCH" in sql for sql in statements)
+    store.close()
+
+
+def test_expiration_waits_for_fts_backfill(tmp_path):
+    store = LogStore(tmp_path / "wait-for-fts.db", retention_days=1)
+    store.insert(parse_syslog("old event", "10.0.0.1", "UDP"))
+    old = (datetime.now(timezone.utc) - timedelta(days=2)).isoformat(timespec="milliseconds")
+    with store.db:
+        store.db.execute("UPDATE messages SET received_at=?", (old,))
+    store._set_index_state(ready=False, progress=50)
+    assert store.purge_expired() == 0
+    assert store.stats()["total"] == 1
+    store._set_index_state(ready=True, progress=100)
+    assert store.purge_expired() == 1
+    store.close()

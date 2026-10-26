@@ -2,19 +2,25 @@
 
 Coletor Syslog multiplataforma, reimplementado em Python, com painel web local e armazenamento SQLite. O projeto original foi criado por Max Belkov e publicado sob GPL-2.0; este fork mantém essa licença. Consulte `NOTICE` para o histórico e a atribuição do projeto de origem.
 
-## Recursos da versão 2.5.0
+## Recursos da versão 2.6.0
+
+A 2.6.0 parte da versão funcional 2.5.3 e preserva o banco SQLite existente. O painel usa contadores incrementais; a busca textual usa FTS5, indexada em lotes retomáveis em segundo plano. Na primeira abertura de um banco antigo, o painel e a coleta continuam ativos e a interface mostra o progresso; somente a busca e a limpeza de retenção aguardam o término para não travar nem corromper a migração. Essa atualização usa CPU, disco e espaço adicional no próprio arquivo `.db` enquanto cria o índice.
 
 - Recebe mensagens por UDP e TCP; interpreta o PRI e campos comuns de RFC 3164 e RFC 5424.
 - Painel responsivo em português e inglês, com atualização contínua e busca avançada em janela própria. Os termos sem aspas são combinados (AND), frases podem ser colocadas entre aspas e IPs/portas são comparados em limites exatos; os resultados são paginados.
-- Armazena eventos em SQLite, com índices para data, host e severidade. Não requer serviço externo de banco de dados.
+- Armazena eventos em SQLite com índices para data, host, severidade e texto (FTS5). Não requer serviço externo de banco de dados; a consulta do painel não recalcula os totais percorrendo toda a tabela a cada atualização.
 - Retenção deslizante padrão de 1.095 dias (três anos), configurável no painel até 36.500 dias. A limpeza executa na inicialização e a cada hora. A expiração é baseada no instante de recebimento.
 - Configuração pela interface das portas Syslog UDP e TCP, com atualização imediata e persistência após reiniciar.
 - Migração do banco para outro disco pela interface. O banco é copiado de forma consistente, o destino passa a ser usado e o arquivo anterior é removido após a migração; não é mantido backup.
 - O banco contém timestamps e índices de data; os registros vencidos são removidos automaticamente. Não são gerados arquivos TXT nem um arquivo físico por dia.
 
-## Distribuição Windows 2.5.0
+## Inicialização e diagnóstico
 
-Este build mantém o código funcional da versão 2.5.0, acrescenta somente o número no rodapé e desativa UPX no empacotamento. O executável não possui assinatura digital de código; desativar UPX pode reduzir um fator associado a falsos positivos, mas não garante que o Defender deixe de sinalizar o arquivo.
+O painel só é aberto no navegador depois de responder na porta HTTP. Builds Windows sem console registram saída em `%LOCALAPPDATA%\VisualSyslog\logs\visualsyslog-startup.log` e mostram uma mensagem se falharem na inicialização. O workflow executa um smoke test do executável Windows empacotado antes de criar o instalador.
+
+## Segurança do instalador Windows
+
+A versão 2.6.0 é compilada sem UPX, pois compactadores podem contribuir para detecções heurísticas. O executável não possui assinatura digital de código. Por isso, esta mudança reduz um fator de falso positivo, mas não garante que o Microsoft Defender ou outros antivírus aprovem o arquivo; valide-o antes de distribuir em ambientes de produção. Não restaure nem permita a versão 2.5.1 que foi detectada.
 
 ## Executar a partir do código
 
@@ -63,6 +69,6 @@ pytest
 
 Contribuições são bem-vindas. Mudanças redistribuídas devem seguir os termos da GPL-2.0.
 
-## Configurações pela interface (versão 2.5.0)
+## Configurações pela interface (versão 2.5)
 
 No botão **Configurações**, é possível mudar o IP de escuta, as portas UDP e TCP, o prazo de retenção e o idioma (português do Brasil ou inglês dos Estados Unidos). No Windows, há também uma opção para iniciar o coletor ao entrar na conta, sem abrir automaticamente o navegador nem uma janela de prompt. Por padrão, o modo **Automático** identifica a cada inicialização o endereço IPv4 local escolhido pelo sistema para a rota padrão. No modo **Manual**, você pode escolher e persistir outro IP atribuído à máquina; `0.0.0.0` continua disponível caso queira escutar em todas as interfaces. Um IP inválido ou não atribuído é rejeitado sem substituir o listener atual. Se o IP manual salvo deixar de existir, o aplicativo inicia no IP padrão atual e exibe um aviso para corrigir a configuração. Para transferir o banco para outro disco, informe o caminho completo do novo arquivo, por exemplo `D:\\VisualSyslog\\visualsyslog.db`, e selecione **Mover banco**. O aplicativo copia o banco de forma consistente enquanto está aberto, ativa o arquivo no novo local e remove o arquivo anterior após a migração. Não mantém uma cópia de backup. O destino não pode existir previamente. Se o disco configurado ficar indisponível, os logs não são gravados em outro arquivo local; a interface mostra um aviso até que o banco seja configurado novamente. Mantenha o disco disponível e com espaço livre; se o caminho salvo não estiver acessível na próxima inicialização, o painel destaca o problema e mostra o caminho configurado para facilitar a correção. As configurações permanecem após reiniciar o aplicativo.

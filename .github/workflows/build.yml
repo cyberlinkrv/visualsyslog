@@ -52,7 +52,7 @@ jobs:
               if ($process.HasExited) { throw "VisualSyslog exited during startup with code $($process.ExitCode)" }
               try {
                 $stats = Invoke-RestMethod -Uri "http://127.0.0.1:$port/api/stats" -TimeoutSec 2
-                if ($stats.retention_days -eq 1095) { $ready = $true; break }
+                if ($stats.retention_days -eq 1095 -and $stats.performance_ready -and $stats.search_index.available) { $ready = $true; break }
               } catch { Start-Sleep -Milliseconds 500 }
             }
             if (-not $ready) { throw 'VisualSyslog did not answer the HTTP smoke test within 30 seconds' }
