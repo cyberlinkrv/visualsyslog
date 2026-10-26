@@ -130,7 +130,7 @@ def create_app(data_dir: Path | str | None = None, udp_host: str | None = None, 
                 await app.state.maintenance_task
             store.close()
 
-    app = FastAPI(title="VisualSyslog", version="2.5.2", lifespan=lifespan)
+    app = FastAPI(title="VisualSyslog", version="2.5.3", lifespan=lifespan)
     app.state.store = store
     app.state.config_file = config_file
     app.state.bind_ip = bind_ip

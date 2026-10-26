@@ -33,6 +33,32 @@ jobs:
         with: {python-version: '3.12'}
       - run: python -m pip install -e '.[build]'
       - run: pyinstaller --clean --noconfirm packaging/visualsyslog.spec
+      - name: Smoke test packaged Windows executable
+        shell: pwsh
+        run: |
+          $dataDir = Join-Path $env:RUNNER_TEMP 'visualsyslog-smoke'
+          New-Item -ItemType Directory -Force -Path $dataDir | Out-Null
+          $env:VISUALSYSLOG_DATA_DIR = $dataDir
+          $listener = [System.Net.Sockets.TcpListener]::new([System.Net.IPAddress]::Loopback, 0)
+          $listener.Start()
+          $port = $listener.LocalEndpoint.Port
+          $listener.Stop()
+          $args = @('--no-browser', '--web-host', '127.0.0.1', '--web-port', "$port", '--syslog-host', '127.0.0.1', '--udp-port', '0', '--tcp-port', '0')
+          $exe = (Resolve-Path 'dist\VisualSyslog.exe').Path
+          $process = Start-Process -FilePath $exe -ArgumentList $args -PassThru
+          try {
+            $ready = $false
+            for ($i = 0; $i -lt 60; $i++) {
+              if ($process.HasExited) { throw "VisualSyslog exited during startup with code $($process.ExitCode)" }
+              try {
+                $stats = Invoke-RestMethod -Uri "http://127.0.0.1:$port/api/stats" -TimeoutSec 2
+                if ($stats.retention_days -eq 1095) { $ready = $true; break }
+              } catch { Start-Sleep -Milliseconds 500 }
+            }
+            if (-not $ready) { throw 'VisualSyslog did not answer the HTTP smoke test within 30 seconds' }
+          } finally {
+            if (-not $process.HasExited) { Stop-Process -Id $process.Id -Force }
+          }
       - run: choco install innosetup --yes --no-progress
       - run: iscc packaging\visualsyslog.iss
       - uses: actions/upload-artifact@v4

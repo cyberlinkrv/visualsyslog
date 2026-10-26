@@ -185,3 +185,40 @@ def test_search_results_modal_supports_refinement_and_loading_state(tmp_path):
         assert 'id="searchLoading"' in page.text
         assert 'aria-live="polite"' in page.text
         assert "animation:search-spin" in page.text
+
+
+def test_browser_opens_only_after_dashboard_is_ready(monkeypatch):
+    import threading
+    from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+    from unittest.mock import Mock
+
+    from visualsyslog import __main__ as entrypoint
+
+    class Handler(BaseHTTPRequestHandler):
+        def do_GET(self):
+            self.send_response(200)
+            self.end_headers()
+            self.wfile.write(b"ready")
+
+        def log_message(self, *_args):
+            pass
+
+    server = ThreadingHTTPServer(("127.0.0.1", 0), Handler)
+    thread = threading.Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+    open_browser = Mock()
+    monkeypatch.setattr(entrypoint.webbrowser, "open", open_browser)
+    try:
+        entrypoint._open_browser_when_ready("0.0.0.0", server.server_address[1], timeout=1)
+        open_browser.assert_called_once_with(f"http://127.0.0.1:{server.server_address[1]}")
+    finally:
+        server.shutdown()
+        server.server_close()
+        thread.join(timeout=2)
+
+
+def test_windowed_build_uses_readable_browser_url_for_ipv6():
+    from visualsyslog import __main__ as entrypoint
+
+    assert entrypoint._panel_url("::", 8080) == "http://127.0.0.1:8080"
+    assert entrypoint._panel_url("::1", 8080) == "http://[::1]:8080"

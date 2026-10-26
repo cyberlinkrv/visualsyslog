@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 set -euo pipefail
-VERSION="${1:-2.5.2}"
+VERSION="${1:-2.5.3}"
 ARCH="$(dpkg --print-architecture)"
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 cd "$ROOT"
