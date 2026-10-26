@@ -81,3 +81,56 @@ def test_missing_configured_database_is_reported_without_overwrite(tmp_path):
     assert app.state.storage_warning is not None
     assert str(missing) in app.state.storage_warning
     app.state.store.close()
+
+
+def test_default_bind_ip_is_a_specific_address():
+    import ipaddress
+    from visualsyslog.network import get_default_bind_ip
+
+    address = ipaddress.ip_address(get_default_bind_ip())
+    assert address.version == 4
+    assert not address.is_unspecified
+
+
+def test_bind_ip_can_change_and_unassigned_address_is_rejected(tmp_path):
+    app = create_app(data_dir=tmp_path, udp_host="127.0.0.1", udp_port=0,
+                     tcp_host="127.0.0.1", tcp_port=0)
+    with TestClient(app) as client:
+        changed = client.put("/api/settings", json={"bind_ip": "127.0.0.2"})
+        assert changed.status_code == 200, changed.text
+        assert changed.json()["bind_ip"] == "127.0.0.2"
+        assert client.get("/api/stats").json()["listeners"]["udp"].startswith("127.0.0.2:")
+        bad = client.put("/api/settings", json={"bind_ip": "203.0.113.77"})
+        assert bad.status_code == 400
+        assert client.get("/api/settings").json()["bind_ip"] == "127.0.0.2"
+        assert client.put("/api/settings", json={"bind_ip": "not-an-ip"}).status_code == 400
+    restarted = create_app(data_dir=tmp_path, udp_host=None, udp_port=0, tcp_host=None, tcp_port=0)
+    assert restarted.state.bind_ip == "127.0.0.2"
+    restarted.state.store.close()
+
+
+def test_unavailable_saved_bind_ip_falls_back_and_is_reported(tmp_path):
+    from visualsyslog.config import save_settings, settings_file_path
+    from visualsyslog.network import get_default_bind_ip
+
+    data_dir = tmp_path / "app"
+    save_settings(settings_file_path(data_dir), {"bind_ip": "203.0.113.88"})
+    app = create_app(data_dir=data_dir, udp_host=None, udp_port=0, tcp_host=None, tcp_port=0)
+    assert app.state.bind_ip == get_default_bind_ip()
+    assert app.state.network_warning is not None
+    assert "203.0.113.88" in app.state.network_warning
+    app.state.store.close()
+
+
+def test_auto_bind_mode_reselects_default_route_ip(tmp_path, monkeypatch):
+    import visualsyslog.server as server
+
+    app = create_app(data_dir=tmp_path, udp_host=None, udp_port=0, tcp_host=None, tcp_port=0)
+    with TestClient(app) as client:
+        current = app.state.bind_ip
+        next_ip = "127.0.0.2" if current != "127.0.0.2" else "127.0.0.3"
+        monkeypatch.setattr(server, "get_default_bind_ip", lambda: next_ip)
+        response = client.put("/api/settings", json={"bind_ip_mode": "auto"})
+        assert response.status_code == 200, response.text
+        assert response.json()["bind_ip"] == next_ip
+        assert response.json()["bind_ip_mode"] == "auto"

@@ -1,12 +1,14 @@
 from __future__ import annotations
 
 import asyncio
+import ipaddress
 import os
 import re
 import sqlite3
 from contextlib import asynccontextmanager, suppress
 from datetime import datetime, timezone
 from pathlib import Path
+from typing import Literal
 
 from fastapi import FastAPI, HTTPException, Query
 from fastapi.responses import FileResponse
@@ -15,6 +17,7 @@ from pydantic import BaseModel, Field
 
 from .config import load_settings, save_settings, settings_file_path
 from .store import LogStore, default_data_dir
+from .network import get_default_bind_ip, is_ip_assigned
 
 PRI = re.compile(r"^<(?P<pri>\d{1,3})>(?P<body>.*)$", re.S)
 RFC5424 = re.compile(r"^\d+\s+(?P<timestamp>\S+)\s+(?P<host>\S+)\s+(?P<app>\S+)\s+\S+\s+\S+\s+(?:-|\[.*?\])\s*(?P<msg>.*)$", re.S)
@@ -51,18 +54,37 @@ class SettingsUpdate(BaseModel):
     retention_days: int | None = Field(default=None, ge=1, le=36500)
     udp_port: int | None = Field(default=None, ge=1, le=65535)
     tcp_port: int | None = Field(default=None, ge=1, le=65535)
+    bind_ip: str | None = Field(default=None, min_length=2, max_length=45)
+    bind_ip_mode: Literal["auto", "manual"] | None = None
 
 
 class DatabaseLocationUpdate(BaseModel):
     database_path: str = Field(min_length=1, max_length=1024)
 
 
-def create_app(data_dir: Path | str | None = None, udp_host="0.0.0.0", udp_port=5514,
-               tcp_host="0.0.0.0", tcp_port=5514, web_host="127.0.0.1", web_port=8080):
+def _format_listener(bind_ip: str, port: int) -> str:
+    return f"[{bind_ip}]:{port}" if ":" in bind_ip else f"{bind_ip}:{port}"
+
+
+def create_app(data_dir: Path | str | None = None, udp_host: str | None = None, udp_port=5514,
+               tcp_host: str | None = None, tcp_port=5514, web_host="127.0.0.1", web_port=8080):
     udp_port = int(udp_port if udp_port is not None else os.getenv("VSYSLOG_UDP_PORT", "5514"))
     tcp_port = int(tcp_port if tcp_port is not None else os.getenv("VSYSLOG_TCP_PORT", "5514"))
     config_file = settings_file_path(data_dir)
     saved = load_settings(config_file)
+    explicit_ip = udp_host or tcp_host or os.getenv("VSYSLOG_HOST")
+    bind_ip_mode = saved.get("bind_ip_mode", "manual" if saved.get("bind_ip") or explicit_ip else "auto")
+    configured_bind_ip = saved.get("bind_ip") or explicit_ip
+    bind_ip = (configured_bind_ip if bind_ip_mode == "manual" else get_default_bind_ip()) or get_default_bind_ip()
+    try:
+        ipaddress.ip_address(bind_ip)
+    except ValueError as exc:
+        raise ValueError(f"IP de escuta inválido nas configurações: {bind_ip}") from exc
+    network_warning = None
+    if not is_ip_assigned(bind_ip):
+        network_warning = (f"O IP de escuta configurado ({bind_ip}) não está atribuído à máquina. "
+                           "Os listeners foram iniciados no IP padrão atual; escolha um IP válido em Configurações.")
+        bind_ip = get_default_bind_ip()
     default_db = Path(data_dir).expanduser() / "visualsyslog.db" if data_dir else default_data_dir() / "visualsyslog.db"
     requested_db = Path(saved.get("database_path", default_db)).expanduser()
     storage_warning = None
@@ -87,8 +109,8 @@ def create_app(data_dir: Path | str | None = None, udp_host="0.0.0.0", udp_port=
                     store.insert(parse_syslog(data.decode("utf-8", errors="replace"), str(addr[0]), "UDP"))
 
         app.state.udp_transport, _ = await loop.create_datagram_endpoint(
-            Receiver, local_addr=(udp_host, app.state.udp_port))
-        app.state.tcp_server = await asyncio.start_server(tcp_client, tcp_host, app.state.tcp_port)
+            Receiver, local_addr=(app.state.bind_ip, app.state.udp_port))
+        app.state.tcp_server = await asyncio.start_server(tcp_client, app.state.bind_ip, app.state.tcp_port)
 
         async def maintenance():
             while True:
@@ -107,11 +129,12 @@ def create_app(data_dir: Path | str | None = None, udp_host="0.0.0.0", udp_port=
                 await app.state.maintenance_task
             store.close()
 
-    app = FastAPI(title="VisualSyslog", version="2.1.0", lifespan=lifespan)
+    app = FastAPI(title="VisualSyslog", version="2.2.0", lifespan=lifespan)
     app.state.store = store
     app.state.config_file = config_file
-    app.state.udp_host = udp_host
-    app.state.tcp_host = tcp_host
+    app.state.bind_ip = bind_ip
+    app.state.bind_ip_mode = bind_ip_mode
+    app.state.network_warning = network_warning
     app.state.web_host = web_host
     app.state.web_port = web_port
     app.state.udp_port = int(saved.get("udp_port", udp_port))
@@ -145,22 +168,35 @@ def create_app(data_dir: Path | str | None = None, udp_host="0.0.0.0", udp_port=
     @app.get("/api/stats")
     async def stats():
         return {**store.stats(), "storage_warning": app.state.storage_warning,
-                "listeners": {"udp": f"{udp_host}:{app.state.udp_port}",
-                              "tcp": f"{tcp_host}:{app.state.tcp_port}"}}
+                "network_warning": app.state.network_warning,
+                "listeners": {"udp": _format_listener(app.state.bind_ip, app.state.udp_port),
+                              "tcp": _format_listener(app.state.bind_ip, app.state.tcp_port)}}
 
     @app.get("/api/settings")
     async def get_settings():
         return {"retention_days": store.retention_days(), "database_path": str(store.path),
                 "configured_database_path": saved.get("database_path", str(store.path)),
                 "udp_port": app.state.udp_port, "tcp_port": app.state.tcp_port,
+                "bind_ip": app.state.bind_ip, "bind_ip_mode": app.state.bind_ip_mode,
+                "configured_bind_ip": (app.state.bind_ip if app.state.bind_ip_mode == "auto"
+                                        else saved.get("bind_ip", app.state.bind_ip)),
+                "network_warning": app.state.network_warning,
                 "storage_warning": app.state.storage_warning}
 
     @app.put("/api/settings")
     async def set_settings(payload: SettingsUpdate):
         new_udp = payload.udp_port if payload.udp_port is not None else app.state.udp_port
         new_tcp = payload.tcp_port if payload.tcp_port is not None else app.state.tcp_port
-        changed_udp = new_udp != app.state.udp_port
-        changed_tcp = new_tcp != app.state.tcp_port
+        new_mode = payload.bind_ip_mode or app.state.bind_ip_mode
+        new_ip = (get_default_bind_ip() if new_mode == "auto" else
+                  (payload.bind_ip.strip() if payload.bind_ip is not None else app.state.bind_ip))
+        try:
+            ipaddress.ip_address(new_ip)
+        except ValueError as exc:
+            raise HTTPException(status_code=400, detail="Informe um endereço IP válido atribuído a esta máquina.") from exc
+        changed_ip = new_ip != app.state.bind_ip
+        changed_udp = new_udp != app.state.udp_port or changed_ip
+        changed_tcp = new_tcp != app.state.tcp_port or changed_ip
         new_udp_transport = None
         new_tcp_server = None
         loop = asyncio.get_running_loop()
@@ -171,17 +207,17 @@ def create_app(data_dir: Path | str | None = None, udp_host="0.0.0.0", udp_port=
         try:
             if changed_udp:
                 new_udp_transport, _ = await loop.create_datagram_endpoint(
-                    Receiver, local_addr=(udp_host, new_udp))
+                    Receiver, local_addr=(new_ip, new_udp))
             if changed_tcp:
-                new_tcp_server = await asyncio.start_server(tcp_client, tcp_host, new_tcp)
-            save_settings(config_file, {"udp_port": new_udp, "tcp_port": new_tcp})
+                new_tcp_server = await asyncio.start_server(tcp_client, new_ip, new_tcp)
+            save_settings(config_file, {"udp_port": new_udp, "tcp_port": new_tcp, "bind_ip": new_ip, "bind_ip_mode": new_mode})
         except (OSError, RuntimeError) as exc:
             if new_udp_transport:
                 new_udp_transport.close()
             if new_tcp_server:
                 new_tcp_server.close()
                 await new_tcp_server.wait_closed()
-            raise HTTPException(status_code=400, detail=f"Não foi possível aplicar as portas: {exc}") from exc
+            raise HTTPException(status_code=400, detail=f"Não foi possível aplicar o IP/portas. Confirme que o IP está atribuído à máquina e que as portas estão livres: {exc}") from exc
 
         if changed_udp:
             app.state.udp_transport.close()
@@ -193,6 +229,10 @@ def create_app(data_dir: Path | str | None = None, udp_host="0.0.0.0", udp_port=
             await old_tcp.wait_closed()
             app.state.tcp_server = new_tcp_server
             app.state.tcp_port = new_tcp
+        app.state.bind_ip = new_ip
+        app.state.bind_ip_mode = new_mode
+        app.state.network_warning = None
+        saved.update({"bind_ip": new_ip, "bind_ip_mode": new_mode, "udp_port": new_udp, "tcp_port": new_tcp})
         if payload.retention_days is not None:
             store.set_retention_days(payload.retention_days)
         return await get_settings()

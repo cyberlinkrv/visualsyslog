@@ -2,7 +2,7 @@
 
 Coletor Syslog multiplataforma, reimplementado em Python, com painel web local e armazenamento SQLite. O projeto original foi criado por Max Belkov e publicado sob GPL-2.0; este fork mantém essa licença. Consulte `NOTICE` para o histórico e a atribuição do projeto de origem.
 
-## Recursos da versão 2.1.0
+## Recursos da versão 2.2.0
 
 - Recebe mensagens por UDP e TCP; interpreta o PRI e campos comuns de RFC 3164 e RFC 5424.
 - Painel responsivo em português, com atualização contínua, busca e filtro por severidade.
@@ -25,7 +25,7 @@ python -m pip install -e .
 visualsyslog
 ```
 
-O painel abre em `http://127.0.0.1:8080`. O coletor escuta UDP e TCP na porta 5514. A porta 514 pode ser selecionada explicitamente, mas em Linux normalmente requer privilégios especiais; recomenda-se usar 5514 ou encaminhar a porta 514 pelo firewall/roteador.
+O painel abre em `http://127.0.0.1:8080`. O coletor escuta UDP e TCP na porta 5514, associado por padrão ao IP local que o sistema seleciona para a rota padrão. A porta 514 pode ser selecionada explicitamente, mas em Linux normalmente requer privilégios especiais; recomenda-se usar 5514 ou encaminhar a porta 514 pelo firewall/roteador.
 
 ```bash
 visualsyslog --udp-port 5514 --tcp-port 5514 --web-port 8080
@@ -59,6 +59,6 @@ pytest
 
 Contribuições são bem-vindas. Mudanças redistribuídas devem seguir os termos da GPL-2.0.
 
-## Configurações pela interface
+## Configurações pela interface (versão 2.2)
 
-No botão **Configurações**, é possível mudar o prazo de retenção e as portas UDP e TCP. Para transferir o banco para outro disco, informe o caminho completo do novo arquivo, por exemplo `D:\\VisualSyslog\\visualsyslog.db`, e selecione **Mover banco**. O aplicativo faz uma cópia consistente do banco enquanto está aberto, passa a usar o novo arquivo e mantém o banco anterior como backup. O destino não pode existir previamente. Mantenha o disco disponível e com espaço livre; se o caminho salvo não estiver acessível na próxima inicialização, o painel destaca o problema e mostra o caminho configurado para facilitar a correção. As configurações permanecem após reiniciar o aplicativo.
+No botão **Configurações**, é possível mudar o IP de escuta, as portas UDP e TCP e o prazo de retenção. Por padrão, o modo **Automático** identifica a cada inicialização o endereço IPv4 local escolhido pelo sistema para a rota padrão. No modo **Manual**, você pode escolher e persistir outro IP atribuído à máquina; `0.0.0.0` continua disponível caso queira escutar em todas as interfaces. Um IP inválido ou não atribuído é rejeitado sem substituir o listener atual. Se o IP manual salvo deixar de existir, o aplicativo inicia no IP padrão atual e exibe um aviso para corrigir a configuração. Para transferir o banco para outro disco, informe o caminho completo do novo arquivo, por exemplo `D:\\VisualSyslog\\visualsyslog.db`, e selecione **Mover banco**. O aplicativo faz uma cópia consistente do banco enquanto está aberto, passa a usar o novo arquivo e mantém o banco anterior como backup. O destino não pode existir previamente. Mantenha o disco disponível e com espaço livre; se o caminho salvo não estiver acessível na próxima inicialização, o painel destaca o problema e mostra o caminho configurado para facilitar a correção. As configurações permanecem após reiniciar o aplicativo.
