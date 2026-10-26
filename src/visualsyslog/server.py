@@ -18,6 +18,7 @@ from pydantic import BaseModel, Field
 from .config import load_settings, save_settings, settings_file_path
 from .store import LogStore, default_data_dir
 from .network import get_default_bind_ip, is_ip_assigned
+from .startup import is_windows_autostart_supported, set_windows_autostart, windows_autostart_enabled
 
 PRI = re.compile(r"^<(?P<pri>\d{1,3})>(?P<body>.*)$", re.S)
 RFC5424 = re.compile(r"^\d+\s+(?P<timestamp>\S+)\s+(?P<host>\S+)\s+(?P<app>\S+)\s+\S+\s+\S+\s+(?:-|\[.*?\])\s*(?P<msg>.*)$", re.S)
@@ -56,6 +57,8 @@ class SettingsUpdate(BaseModel):
     tcp_port: int | None = Field(default=None, ge=1, le=65535)
     bind_ip: str | None = Field(default=None, min_length=2, max_length=45)
     bind_ip_mode: Literal["auto", "manual"] | None = None
+    start_with_windows: bool | None = None
+    language: Literal["pt-BR", "en-US"] | None = None
 
 
 class DatabaseLocationUpdate(BaseModel):
@@ -93,9 +96,7 @@ def create_app(data_dir: Path | str | None = None, udp_host: str | None = None, 
             raise FileNotFoundError(f"O arquivo configurado não foi encontrado: {requested_db}")
         store = LogStore(requested_db, settings_file=config_file)
     except (OSError, sqlite3.Error, RuntimeError) as exc:
-        fallback_dir = Path(data_dir).expanduser() if data_dir else default_data_dir()
-        fallback_db = fallback_dir / "visualsyslog-recovery.db"
-        store = LogStore(fallback_db, settings_file=config_file)
+        store = LogStore(":memory:", settings_file=config_file)
         storage_warning = (f"O banco configurado não está acessível ({requested_db}). A coleta foi pausada. "
                            f"Aponte para um banco disponível nas Configurações. Detalhe: {exc}")
 
@@ -129,7 +130,7 @@ def create_app(data_dir: Path | str | None = None, udp_host: str | None = None, 
                 await app.state.maintenance_task
             store.close()
 
-    app = FastAPI(title="VisualSyslog", version="2.2.0", lifespan=lifespan)
+    app = FastAPI(title="VisualSyslog", version="2.3.0", lifespan=lifespan)
     app.state.store = store
     app.state.config_file = config_file
     app.state.bind_ip = bind_ip
@@ -167,7 +168,8 @@ def create_app(data_dir: Path | str | None = None, udp_host: str | None = None, 
 
     @app.get("/api/stats")
     async def stats():
-        return {**store.stats(), "storage_warning": app.state.storage_warning,
+        return {**store.stats(), "database": saved.get("database_path", str(store.path)),
+                "storage_warning": app.state.storage_warning,
                 "network_warning": app.state.network_warning,
                 "listeners": {"udp": _format_listener(app.state.bind_ip, app.state.udp_port),
                               "tcp": _format_listener(app.state.bind_ip, app.state.tcp_port)}}
@@ -181,7 +183,10 @@ def create_app(data_dir: Path | str | None = None, udp_host: str | None = None, 
                 "configured_bind_ip": (app.state.bind_ip if app.state.bind_ip_mode == "auto"
                                         else saved.get("bind_ip", app.state.bind_ip)),
                 "network_warning": app.state.network_warning,
-                "storage_warning": app.state.storage_warning}
+                "storage_warning": app.state.storage_warning,
+                "language": saved.get("language", "pt-BR"),
+                "start_with_windows_supported": is_windows_autostart_supported(),
+                "start_with_windows": windows_autostart_enabled()}
 
     @app.put("/api/settings")
     async def set_settings(payload: SettingsUpdate):
@@ -235,6 +240,18 @@ def create_app(data_dir: Path | str | None = None, udp_host: str | None = None, 
         saved.update({"bind_ip": new_ip, "bind_ip_mode": new_mode, "udp_port": new_udp, "tcp_port": new_tcp})
         if payload.retention_days is not None:
             store.set_retention_days(payload.retention_days)
+        updates = {}
+        if payload.language is not None:
+            updates["language"] = payload.language
+        if payload.start_with_windows is not None:
+            try:
+                set_windows_autostart(payload.start_with_windows)
+                updates["start_with_windows"] = payload.start_with_windows
+            except OSError as exc:
+                raise HTTPException(status_code=400, detail=str(exc)) from exc
+        if updates:
+            save_settings(config_file, updates)
+            saved.update(updates)
         return await get_settings()
 
     @app.put("/api/settings/database")
@@ -243,15 +260,22 @@ def create_app(data_dir: Path | str | None = None, udp_host: str | None = None, 
         if not target.is_absolute():
             raise HTTPException(status_code=400, detail="Informe o caminho completo do arquivo .db.")
         try:
-            old_path, new_path = await asyncio.to_thread(store.move_to, target)
+            old_path, new_path, source_removed = await asyncio.to_thread(store.move_to, target)
         except FileExistsError as exc:
             raise HTTPException(status_code=409, detail=str(exc)) from exc
         except (OSError, sqlite3.Error, RuntimeError, ValueError) as exc:
             raise HTTPException(status_code=400, detail=f"Não foi possível mover o banco: {exc}") from exc
         app.state.storage_warning = None
         saved.update({"database_path": str(new_path)})
+        if old_path == new_path:
+            cleanup_message = "O banco já estava neste local; nenhuma cópia foi criada."
+        elif source_removed:
+            cleanup_message = "O arquivo anterior foi removido."
+        else:
+            cleanup_message = f" Não foi possível remover o arquivo anterior; remova-o manualmente: {old_path}"
         return {"database_path": str(new_path), "previous_database_path": str(old_path),
-                "retention_days": store.retention_days(),
-                "message": "Banco copiado e ativado. O arquivo original foi mantido como cópia de segurança."}
+                "already_configured": old_path == new_path,
+                "previous_database_removed": source_removed, "retention_days": store.retention_days(),
+                "message": "Banco movido e ativado; não foi mantido backup." + cleanup_message}
 
     return app

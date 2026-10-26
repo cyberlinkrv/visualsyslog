@@ -22,11 +22,15 @@ def default_data_dir() -> Path:
 class LogStore:
     def __init__(self, path: Path | str | None = None, retention_days: int = 1095,
                  settings_file: Path | str | None = None):
-        self.path = Path(path or default_data_dir() / "visualsyslog.db").expanduser().resolve()
+        requested = str(path) if path is not None else str(default_data_dir() / "visualsyslog.db")
+        self.in_memory = requested == ":memory:"
+        self.path = Path(":memory:") if self.in_memory else Path(requested).expanduser().resolve()
         self.settings_file = Path(settings_file) if settings_file else None
-        self.path.parent.mkdir(parents=True, exist_ok=True)
+        if not self.in_memory:
+            self.path.parent.mkdir(parents=True, exist_ok=True)
         self.lock = threading.RLock()
-        self.db = self._connect(self.path)
+        self.db = sqlite3.connect(":memory:", check_same_thread=False, timeout=5) if self.in_memory else self._connect(self.path)
+        self.db.row_factory = sqlite3.Row
         self.db.executescript("""
             CREATE TABLE IF NOT EXISTS messages (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -69,15 +73,16 @@ class LogStore:
         with self.lock, self.db:
             self.db.execute("INSERT OR REPLACE INTO settings(key,value) VALUES('retention_days',?)", (str(days),))
 
-    def move_to(self, destination: Path | str) -> tuple[Path, Path]:
+    def move_to(self, destination: Path | str) -> tuple[Path, Path, bool]:
         target = Path(destination).expanduser()
         if not target.is_absolute():
             raise ValueError("Informe o caminho absoluto do arquivo de banco de dados.")
         target = target.resolve()
         with self.lock:
-            source = self.path.resolve()
-            if target == source:
-                return source, target
+            source_was_memory = self.in_memory
+            source = self.path if source_was_memory else self.path.resolve()
+            if not source_was_memory and target == source:
+                return source, target, False
             if target.exists():
                 raise FileExistsError(f"O arquivo de destino já existe: {target}")
             target.parent.mkdir(parents=True, exist_ok=True)
@@ -106,8 +111,16 @@ class LogStore:
             old_db = self.db
             self.db = replacement
             self.path = target
+            self.in_memory = False
             old_db.close()
-            return source, target
+            source_removed = True
+            if not source_was_memory:
+                for old_file in (source, Path(str(source) + "-wal"), Path(str(source) + "-shm")):
+                    try:
+                        old_file.unlink(missing_ok=True)
+                    except OSError:
+                        source_removed = False
+            return source, target, source_removed
 
     def insert(self, item: dict) -> int:
         received = datetime.now(timezone.utc).isoformat(timespec="milliseconds")

@@ -32,11 +32,14 @@ def test_database_move_preserves_logs_and_survives_restart(tmp_path):
         response = client.put("/api/settings/database", json={"database_path": str(destination)})
         assert response.status_code == 200, response.text
         assert destination.exists()
-        assert old_db.exists(), "The previous database should remain as backup"
+        assert not old_db.exists(), "The previous database must be removed after migration"
+        assert response.json()["previous_database_removed"] is True
         assert client.get("/api/messages").json()["items"][0]["message"] == "retained record"
         moved = client.get("/api/settings").json()
         assert moved["database_path"] == str(destination)
-        assert client.put("/api/settings/database", json={"database_path": str(destination)}).status_code == 200
+        same_path = client.put("/api/settings/database", json={"database_path": str(destination)})
+        assert same_path.status_code == 200
+        assert same_path.json()["previous_database_removed"] is False
     restarted = create_app(data_dir=data_dir, udp_host="127.0.0.1", udp_port=0,
                            tcp_host="127.0.0.1", tcp_port=0)
     assert restarted.state.store.path == destination.resolve()
@@ -78,6 +81,8 @@ def test_missing_configured_database_is_reported_without_overwrite(tmp_path):
     app = create_app(data_dir=data_dir, udp_host="127.0.0.1", udp_port=0,
                      tcp_host="127.0.0.1", tcp_port=0)
     assert not missing.exists()
+    assert not (data_dir / "visualsyslog-recovery.db").exists()
+    assert app.state.store.in_memory is True
     assert app.state.storage_warning is not None
     assert str(missing) in app.state.storage_warning
     app.state.store.close()
@@ -134,3 +139,18 @@ def test_auto_bind_mode_reselects_default_route_ip(tmp_path, monkeypatch):
         assert response.status_code == 200, response.text
         assert response.json()["bind_ip"] == next_ip
         assert response.json()["bind_ip_mode"] == "auto"
+
+
+def test_language_setting_is_persisted(tmp_path):
+    app = create_app(data_dir=tmp_path, udp_host="127.0.0.1", udp_port=0,
+                     tcp_host="127.0.0.1", tcp_port=0)
+    with TestClient(app) as client:
+        response = client.put("/api/settings", json={"language": "en-US"})
+        assert response.status_code == 200, response.text
+        assert response.json()["language"] == "en-US"
+    restarted = create_app(data_dir=tmp_path, udp_host="127.0.0.1", udp_port=0,
+                           tcp_host="127.0.0.1", tcp_port=0)
+    assert restarted.state.config_file.exists()
+    from visualsyslog.config import load_settings
+    assert load_settings(restarted.state.config_file)["language"] == "en-US"
+    restarted.state.store.close()
