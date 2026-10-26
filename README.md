@@ -1,94 +1,58 @@
-![](https://raw.githubusercontent.com/MaxBelkov/visualsyslog/master/screens/ico.png) Visual Syslog Server for Windows
-===
-Visual Syslog Server for Windows is a free open source program to receive and view syslog messages.
-Useful when setting up routers and systems based on Unix/Linux.
+# VisualSyslog
 
-Visual Syslog Server for Windows has a live messages view: switches to a new received message. Helpful color highlighting.
-Useful message filtering. Customizable notification and actions.
+Coletor Syslog multiplataforma, reimplementado em Python, com painel web local e armazenamento SQLite. O projeto original foi criado por Max Belkov e publicado sob GPL-2.0; este fork mantém essa licença. Consulte `NOTICE` para o histórico e a atribuição do projeto de origem.
 
-[Read in Russian](readme_rus.md)
+## Recursos desta versão inicial
 
-![Visual Syslog Server for Windows](https://github.com/MaxBelkov/visualsyslog/blob/master/screens/screen1.png?raw=true)
+- Recebe mensagens por UDP e TCP; interpreta o PRI e campos comuns de RFC 3164 e RFC 5424.
+- Painel responsivo em português, com atualização contínua, busca e filtro por severidade.
+- Armazena eventos em SQLite, com índices para data, host e severidade. Não requer serviço externo de banco de dados.
+- Retenção deslizante padrão de 1.095 dias (três anos), configurável no painel até 36.500 dias. A limpeza executa na inicialização e a cada hora. A expiração é baseada no instante de recebimento.
+- O banco contém timestamps e índices de data; os registros vencidos são removidos automaticamente. Não são gerados arquivos TXT nem um arquivo físico por dia.
 
-Features
-===
-* Receive messages from various devices via UDP or TCP protocol (compliant to RFC 3164)
-* Syslog messages are displayed in real-time
-* Stores messages in files on disk
-* Log file rotation by size or by date
-* Filter displayed syslog messages based on facility, priority, host, source address, tag or message contents
-* Customizable color highlighting with nice 3D design
-* Generating notifications depending on the content of the received message:
-  * Show alarms windows
-  * Play sound file
-  * Send e-mail notifications via smtp server
-  * Customizable notices format
-* Performs actions depending on the content of the received message:
-  * Run external program with params
-  * Saving message to the specified file
-* Support for sending mail via SMTP server with authentication SSL / TLS
-  (Support Gmail and iCloud mail smtp servers. You can use the push notifications on your mobile device for instant delivery of alarms.)
-* Lightweight and very fast
-* Run as a Windows application
-* Minimize to system tray
-* Support Windows XP/Vista/7/8/8.1, Windows Server 2003/2008/2012
-* Easy to install: adjustment is not required
-* Import historical syslog messages after the start of the program
-* View syslog messages from the file
-* The ability to receive messages encoded in UTF8
-* Free open source software, licensed under the GPL V2
+## Executar a partir do código
 
-Download
-===
-Visual Syslog Server for Windows download installer:  
-[Last developper snapshot 1.6.4](https://github.com/MaxBelkov/visualsyslog/blob/master/Output/visualsyslog_setup.exe?raw=true)  
-[Latest stable release 1.6.4](https://github.com/MaxBelkov/visualsyslog/releases/latest)
+Requer Python 3.10 ou superior.
 
-Installation
-===
-After installation Visual Syslog Server for Windows works immediately: adjustment is not required.
-Waiting for messages on the UDP and TCP port 514 (default setting).
-Visual Syslog Server is an Windows application (installing a system service is not required).
-Installer adds firewall exception.
+```bash
+python -m venv .venv
+# Linux/macOS
+. .venv/bin/activate
+# Windows PowerShell: .venv\Scripts\Activate.ps1
+python -m pip install -e .
+visualsyslog
+```
 
-Building from sources
-===
-To build Windows Syslog Server from sources use CodeGear RAD Studio C++Builder 2007  
-Main project file _visualsyslog.cbproj_  
-Required components: [Indy.Sockets (VCL) version 10](http://www.indyproject.org/Sockets/index.EN.aspx)
+O painel abre em `http://127.0.0.1:8080`. O coletor escuta UDP e TCP na porta 5514. A porta 514 pode ser selecionada explicitamente, mas em Linux normalmente requer privilégios especiais; recomenda-se usar 5514 ou encaminhar a porta 514 pelo firewall/roteador.
 
-To build the installer, use Inno Setup Compiler 5.5.1(a)  
-Installer project file _visualsyslog.iss_
+```bash
+visualsyslog --udp-port 5514 --tcp-port 5514 --web-port 8080
+visualsyslog --syslog-host 0.0.0.0 --web-host 0.0.0.0 --no-browser
+```
 
-Support
-===
-Your questions and suggestions please send to ![](https://github.com/MaxBelkov/visualsyslog/blob/master/screens/m.png?raw=true)
+**Atenção:** publicar o painel em `0.0.0.0` expõe a interface na rede local e a versão inicial ainda não inclui autenticação. Use `127.0.0.1` (padrão), ou proteja a rede e adicione autenticação antes de expor em uma rede não confiável.
 
-Future plans
-===
-* Message statistics
+## Dados e retenção
 
-If you need these or other functions let me know.  
+Por padrão, o banco fica em `%LOCALAPPDATA%\VisualSyslog\visualsyslog.db` no Windows e em `~/.local/share/visualsyslog/visualsyslog.db` no Linux. `VISUALSYSLOG_DATA_DIR` define outra pasta, por exemplo para volume dedicado. Preserve essa pasta em backups; SQLite em modo WAL pode manter arquivos `-wal`/`-shm` enquanto o aplicativo estiver aberto.
 
-Screenshots
-===
+Defina a retenção na interface. O prazo conta dias corridos a partir do recebimento; valores maiores preservam eventos por mais tempo. Três anos são aproximados por 1.095 dias.
 
-Color highlighting setup
+## Build e instaladores
 
-![Visual Syslog Server for Windows color highlighting](https://github.com/MaxBelkov/visualsyslog/blob/master/screens/screen2.png?raw=true)
+O workflow de release em `.github/workflows/build.yml` gera artefatos para Windows e Linux. No Windows, PyInstaller cria o executável e Inno Setup o empacota em instalador `.exe`. No Ubuntu, o build produz executável portátil e pacote `.deb`. Os artefatos são rascunhos de distribuição e devem ser validados em máquinas limpas de cada sistema antes de produção.
 
-Message processing setup
+Para build local, instale o extra `.[build]` e execute `pyinstaller packaging/visualsyslog.spec`. Linux: `bash packaging/build_deb.sh`. O Inno Setup pode compilar `packaging/visualsyslog.iss` no Windows.
 
-![Visual Syslog Server for Windows message processing](https://github.com/MaxBelkov/visualsyslog/blob/master/screens/screen3.png?raw=true)
+## Compatibilidade e escopo
 
-Main setup
+Esta é uma primeira versão de modernização, não uma migração de configurações, mensagens ou funções avançadas do aplicativo legado. Alertas por e-mail, regras de ação, notificações, importação de logs históricos e serviço de sistema ainda não foram reimplementados. TCP trata uma linha por mensagem; framing octet-counted RFC 6587 e parsing completo de datas/estruturas RFC 5424 ainda precisam de trabalho. O formato SQLite é novo e independente dos arquivos históricos TXT.
 
-![Visual Syslog Server for Windows main setup](https://github.com/MaxBelkov/visualsyslog/blob/master/screens/screen6.png?raw=true)
+## Desenvolvimento e testes
 
-Files rotation setup
+```bash
+python -m pip install -e '.[test]'
+pytest
+```
 
-![Visual Syslog Server for Windows files rotation setup](https://github.com/MaxBelkov/visualsyslog/blob/master/screens/screen5.png?raw=true)
-
-Smtp server setup to send e-mail messages
-
-![Visual Syslog Server for Windows smtp server setup](https://github.com/MaxBelkov/visualsyslog/blob/master/screens/screen4.png?raw=true)
+Contribuições são bem-vindas. Mudanças redistribuídas devem seguir os termos da GPL-2.0.

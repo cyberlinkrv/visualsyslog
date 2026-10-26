@@ -13,3 +13,16 @@ ico/
 *.dsk
 *.skincfg
 *.~*
+
+# Python modernization
+__pycache__/
+*.py[cod]
+*.egg-info/
+.venv/
+venv/
+.pytest_cache/
+build/
+dist/
+*.db
+*.db-shm
+*.db-wal

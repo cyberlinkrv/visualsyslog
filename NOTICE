@@ -1,0 +1,6 @@
+VisualSyslog modernization fork
+
+The original Visual Syslog Server was created by Max Belkov and is available at:
+https://github.com/MaxBelkov/visualsyslog
+
+The original project is licensed under GNU General Public License version 2. This fork retains the GPL-2.0 license. New Python modules in this modernization are a clean reimplementation and do not copy the original C++ implementation. Historical original source files remain in the source/ and sourcecommon/ directories.
