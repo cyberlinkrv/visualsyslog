@@ -3,8 +3,11 @@ from __future__ import annotations
 import os
 import sqlite3
 import threading
+import uuid
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
+
+from .config import load_settings, save_settings
 
 
 def default_data_dir() -> Path:
@@ -17,15 +20,13 @@ def default_data_dir() -> Path:
 
 
 class LogStore:
-    def __init__(self, path: Path | str | None = None, retention_days: int = 1095):
-        self.path = Path(path or default_data_dir() / "visualsyslog.db")
+    def __init__(self, path: Path | str | None = None, retention_days: int = 1095,
+                 settings_file: Path | str | None = None):
+        self.path = Path(path or default_data_dir() / "visualsyslog.db").expanduser().resolve()
+        self.settings_file = Path(settings_file) if settings_file else None
         self.path.parent.mkdir(parents=True, exist_ok=True)
         self.lock = threading.RLock()
-        self.db = sqlite3.connect(self.path, check_same_thread=False)
-        self.db.row_factory = sqlite3.Row
-        self.db.execute("PRAGMA journal_mode=WAL")
-        self.db.execute("PRAGMA synchronous=NORMAL")
-        self.db.execute("PRAGMA busy_timeout=5000")
+        self.db = self._connect(self.path)
         self.db.executescript("""
             CREATE TABLE IF NOT EXISTS messages (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -48,6 +49,15 @@ class LogStore:
         self.db.execute("INSERT OR IGNORE INTO settings(key,value) VALUES('retention_days',?)", (str(max(1, retention_days)),))
         self.db.commit()
 
+    @staticmethod
+    def _connect(path: Path) -> sqlite3.Connection:
+        db = sqlite3.connect(path, check_same_thread=False, timeout=5)
+        db.row_factory = sqlite3.Row
+        db.execute("PRAGMA journal_mode=WAL")
+        db.execute("PRAGMA synchronous=NORMAL")
+        db.execute("PRAGMA busy_timeout=5000")
+        return db
+
     def retention_days(self) -> int:
         with self.lock:
             row = self.db.execute("SELECT value FROM settings WHERE key='retention_days'").fetchone()
@@ -58,6 +68,46 @@ class LogStore:
             raise ValueError("O prazo deve ficar entre 1 e 36.500 dias.")
         with self.lock, self.db:
             self.db.execute("INSERT OR REPLACE INTO settings(key,value) VALUES('retention_days',?)", (str(days),))
+
+    def move_to(self, destination: Path | str) -> tuple[Path, Path]:
+        target = Path(destination).expanduser()
+        if not target.is_absolute():
+            raise ValueError("Informe o caminho absoluto do arquivo de banco de dados.")
+        target = target.resolve()
+        with self.lock:
+            source = self.path.resolve()
+            if target == source:
+                return source, target
+            if target.exists():
+                raise FileExistsError(f"O arquivo de destino já existe: {target}")
+            target.parent.mkdir(parents=True, exist_ok=True)
+            temp = target.with_name(f".{target.name}.{uuid.uuid4().hex}.tmp")
+            replacement = None
+            try:
+                backup = sqlite3.connect(temp, timeout=5)
+                try:
+                    self.db.backup(backup)
+                    backup.commit()
+                finally:
+                    backup.close()
+                os.replace(temp, target)
+                replacement = self._connect(target)
+                if self.settings_file:
+                    save_settings(self.settings_file, {"database_path": str(target)})
+            except Exception:
+                if replacement is not None:
+                    replacement.close()
+                for candidate in (temp, target, Path(str(target) + "-wal"), Path(str(target) + "-shm")):
+                    try:
+                        candidate.unlink(missing_ok=True)
+                    except OSError:
+                        pass
+                raise
+            old_db = self.db
+            self.db = replacement
+            self.path = target
+            old_db.close()
+            return source, target
 
     def insert(self, item: dict) -> int:
         received = datetime.now(timezone.utc).isoformat(timespec="milliseconds")

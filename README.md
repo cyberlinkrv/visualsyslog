@@ -2,12 +2,14 @@
 
 Coletor Syslog multiplataforma, reimplementado em Python, com painel web local e armazenamento SQLite. O projeto original foi criado por Max Belkov e publicado sob GPL-2.0; este fork mantém essa licença. Consulte `NOTICE` para o histórico e a atribuição do projeto de origem.
 
-## Recursos desta versão inicial
+## Recursos da versão 2.1.0
 
 - Recebe mensagens por UDP e TCP; interpreta o PRI e campos comuns de RFC 3164 e RFC 5424.
 - Painel responsivo em português, com atualização contínua, busca e filtro por severidade.
 - Armazena eventos em SQLite, com índices para data, host e severidade. Não requer serviço externo de banco de dados.
 - Retenção deslizante padrão de 1.095 dias (três anos), configurável no painel até 36.500 dias. A limpeza executa na inicialização e a cada hora. A expiração é baseada no instante de recebimento.
+- Configuração pela interface das portas Syslog UDP e TCP, com atualização imediata e persistência após reiniciar.
+- Migração do banco para outro disco pela interface. O banco é copiado de forma consistente, o destino passa a ser usado e a cópia antiga permanece no local original como backup.
 - O banco contém timestamps e índices de data; os registros vencidos são removidos automaticamente. Não são gerados arquivos TXT nem um arquivo físico por dia.
 
 ## Executar a partir do código
@@ -30,7 +32,7 @@ visualsyslog --udp-port 5514 --tcp-port 5514 --web-port 8080
 visualsyslog --syslog-host 0.0.0.0 --web-host 0.0.0.0 --no-browser
 ```
 
-**Atenção:** publicar o painel em `0.0.0.0` expõe a interface na rede local e a versão inicial ainda não inclui autenticação. Use `127.0.0.1` (padrão), ou proteja a rede e adicione autenticação antes de expor em uma rede não confiável.
+**Atenção:** publicar o painel em `0.0.0.0` expõe a interface na rede local e o aplicativo ainda não inclui autenticação. Use `127.0.0.1` (padrão), ou proteja a rede antes de expor em uma rede não confiável.
 
 ## Dados e retenção
 
@@ -56,3 +58,7 @@ pytest
 ```
 
 Contribuições são bem-vindas. Mudanças redistribuídas devem seguir os termos da GPL-2.0.
+
+## Configurações pela interface
+
+No botão **Configurações**, é possível mudar o prazo de retenção e as portas UDP e TCP. Para transferir o banco para outro disco, informe o caminho completo do novo arquivo, por exemplo `D:\\VisualSyslog\\visualsyslog.db`, e selecione **Mover banco**. O aplicativo faz uma cópia consistente do banco enquanto está aberto, passa a usar o novo arquivo e mantém o banco anterior como backup. O destino não pode existir previamente. Mantenha o disco disponível e com espaço livre; se o caminho salvo não estiver acessível na próxima inicialização, o painel destaca o problema e mostra o caminho configurado para facilitar a correção. As configurações permanecem após reiniciar o aplicativo.
