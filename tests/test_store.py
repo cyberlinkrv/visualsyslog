@@ -45,6 +45,15 @@ def test_insert_search_and_retention_setting(tmp_path):
     store.close()
 
 
+def test_hosts_metric_counts_distinct_source_ips(tmp_path):
+    store = LogStore(tmp_path / "hosts.db")
+    store.insert(parse_syslog("first event", "10.10.10.1", "UDP"))
+    store.insert(parse_syslog("another event", "10.10.10.1", "TCP"))
+    store.insert(parse_syslog("third event", "11.11.11.1", "UDP"))
+    assert store.stats()["hosts"] == 2
+    store.close()
+
+
 def test_purge_expired(tmp_path):
     store = LogStore(tmp_path / "purge.db", retention_days=1)
     store.insert(parse_syslog("test", "127.0.0.1", "UDP"))

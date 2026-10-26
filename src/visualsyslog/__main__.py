@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import argparse
 import os
+import sys
 import webbrowser
 
 import uvicorn
@@ -10,6 +11,10 @@ from visualsyslog.server import create_app
 
 
 def main():
+    if sys.stdout is None:
+        sys.stdout = open(os.devnull, "w", encoding="utf-8")
+    if sys.stderr is None:
+        sys.stderr = open(os.devnull, "w", encoding="utf-8")
     p = argparse.ArgumentParser(description="Servidor Syslog VisualSyslog")
     p.add_argument("--udp-port", type=int, default=None)
     p.add_argument("--tcp-port", type=int, default=None)

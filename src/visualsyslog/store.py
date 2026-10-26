@@ -177,7 +177,7 @@ class LogStore:
             total = self.db.execute("SELECT COUNT(*) FROM messages").fetchone()[0]
             today = datetime.now(timezone.utc).date().isoformat()
             recent = self.db.execute("SELECT COUNT(*) FROM messages WHERE received_at >= ?", (today,)).fetchone()[0]
-            hosts = self.db.execute("SELECT COUNT(DISTINCT hostname) FROM messages").fetchone()[0]
+            hosts = self.db.execute("SELECT COUNT(DISTINCT source_ip) FROM messages").fetchone()[0]
         return {"total": total, "today": recent, "hosts": hosts, "retention_days": self.retention_days(), "database": str(self.path)}
 
     def purge_expired(self) -> int:
