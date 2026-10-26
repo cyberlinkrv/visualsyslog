@@ -1,7 +1,7 @@
 [Setup]
 AppId={{C50A8D2A-9433-47A2-95D8-7E0F844C983A}
 AppName=VisualSyslog
-AppVersion=2.3.0
+AppVersion=2.4.0
 AppPublisher=VisualSyslog contributors
 DefaultDirName={autopf}\VisualSyslog
 DefaultGroupName=VisualSyslog

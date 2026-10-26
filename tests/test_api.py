@@ -154,3 +154,21 @@ def test_language_setting_is_persisted(tmp_path):
     from visualsyslog.config import load_settings
     assert load_settings(restarted.state.config_file)["language"] == "en-US"
     restarted.state.store.close()
+
+
+def test_search_api_returns_precise_message_matches(tmp_path):
+    from visualsyslog.server import parse_syslog
+
+    app = create_app(data_dir=tmp_path, udp_host="127.0.0.1", udp_port=0,
+                     tcp_host="127.0.0.1", tcp_port=0)
+    with TestClient(app) as client:
+        app.state.store.insert(parse_syslog("<13>connection from 10.20.30.40 port 514", "192.0.2.1", "UDP"))
+        app.state.store.insert(parse_syslog("<13>connection from 10.20.30.400 port 1514", "192.0.2.2", "UDP"))
+        exact = client.get("/api/messages", params={"search": "10.20.30.40 514", "limit": 1})
+        assert exact.status_code == 200
+        data = exact.json()
+        assert data["total"] == 1
+        assert len(data["items"]) == 1
+        assert "10.20.30.40" in data["items"][0]["message"]
+        assert client.get("/api/messages", params={"search": '"connection from 10.20.30.40"'}).json()["total"] == 1
+        assert client.get("/api/messages", params={"search": "x" * 201}).status_code == 422

@@ -54,3 +54,28 @@ def test_purge_expired(tmp_path):
     assert store.purge_expired() == 1
     assert store.list_messages()[1] == 0
     store.close()
+
+
+def test_search_exact_ip_port_and_multiple_terms(tmp_path):
+    store = LogStore(tmp_path / "search.db")
+    store.insert(parse_syslog("<13>connection from 192.168.20.11:514 refused on port 514", "10.0.0.5", "UDP"))
+    store.insert(parse_syslog("<13>connection from 192.168.20.110:1514 refused", "10.0.0.50", "UDP"))
+
+    assert store.list_messages(search="192.168.20.11")[1] == 1
+    assert store.list_messages(search="514")[1] == 1
+    assert store.list_messages(search="connection refused")[1] == 2
+    assert store.list_messages(search='"connection from 192.168.20.11:514"')[1] == 1
+    assert store.list_messages(search="connection nonexistent")[1] == 0
+    store.close()
+
+
+def test_search_paginates_sorted_results(tmp_path):
+    store = LogStore(tmp_path / "search-pages.db")
+    for i in range(55):
+        store.insert(parse_syslog(f"<13>connection from host{i} port 514", f"10.0.0.{i + 1}", "UDP"))
+    first, total = store.list_messages(limit=50, offset=0, search="connection")
+    second, _ = store.list_messages(limit=50, offset=50, search="connection")
+    assert total == 55
+    assert len(first) == 50 and len(second) == 5
+    assert first[0]["id"] > second[0]["id"]
+    store.close()

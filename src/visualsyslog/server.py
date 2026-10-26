@@ -130,7 +130,7 @@ def create_app(data_dir: Path | str | None = None, udp_host: str | None = None, 
                 await app.state.maintenance_task
             store.close()
 
-    app = FastAPI(title="VisualSyslog", version="2.3.0", lifespan=lifespan)
+    app = FastAPI(title="VisualSyslog", version="2.4.0", lifespan=lifespan)
     app.state.store = store
     app.state.config_file = config_file
     app.state.bind_ip = bind_ip
@@ -162,7 +162,7 @@ def create_app(data_dir: Path | str | None = None, udp_host: str | None = None, 
 
     @app.get("/api/messages")
     async def messages(limit: int = Query(200, ge=1, le=1000), offset: int = Query(0, ge=0),
-                       search: str = "", severity: int | None = Query(None, ge=0, le=7)):
+                       search: str = Query("", max_length=200), severity: int | None = Query(None, ge=0, le=7)):
         rows, total = store.list_messages(limit, offset, search, severity)
         return {"items": rows, "total": total}
 

@@ -1,13 +1,28 @@
 from __future__ import annotations
 
 import os
+import re
 import sqlite3
 import threading
 import uuid
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
+from functools import lru_cache
 
 from .config import load_settings, save_settings
+
+
+@lru_cache(maxsize=2048)
+def _compile_search_pattern(pattern: str):
+    return re.compile(pattern, re.IGNORECASE)
+
+
+def _regexp(pattern: str, value: str | None) -> int:
+    return int(value is not None and _compile_search_pattern(pattern).search(str(value)) is not None)
+
+
+def _search_terms(search: str) -> list[tuple[str, bool]]:
+    return [(quoted or plain, bool(quoted)) for quoted, plain in re.findall(r'"([^"]+)"|(\S+)', search.strip())]
 
 
 def default_data_dir() -> Path:
@@ -31,6 +46,7 @@ class LogStore:
         self.lock = threading.RLock()
         self.db = sqlite3.connect(":memory:", check_same_thread=False, timeout=5) if self.in_memory else self._connect(self.path)
         self.db.row_factory = sqlite3.Row
+        self.db.create_function("REGEXP", 2, _regexp, deterministic=True)
         self.db.executescript("""
             CREATE TABLE IF NOT EXISTS messages (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -57,6 +73,7 @@ class LogStore:
     def _connect(path: Path) -> sqlite3.Connection:
         db = sqlite3.connect(path, check_same_thread=False, timeout=5)
         db.row_factory = sqlite3.Row
+        db.create_function("REGEXP", 2, _regexp, deterministic=True)
         db.execute("PRAGMA journal_mode=WAL")
         db.execute("PRAGMA synchronous=NORMAL")
         db.execute("PRAGMA busy_timeout=5000")
@@ -134,9 +151,19 @@ class LogStore:
     def list_messages(self, limit=200, offset=0, search="", severity=None):
         limit = max(1, min(int(limit), 1000)); offset = max(0, int(offset))
         clauses=[]; params=[]
-        if search:
-            clauses.append("(message LIKE ? OR hostname LIKE ? OR source_ip LIKE ? OR app_name LIKE ?)")
-            params.extend([f"%{search}%"]*4)
+        for term, exact_phrase in _search_terms(search):
+            if not term:
+                continue
+            pattern = re.escape(term)
+            if exact_phrase:
+                if term[0].isalnum() or term[0] == "_":
+                    pattern = r"(?<!\w)" + pattern
+                if term[-1].isalnum() or term[-1] == "_":
+                    pattern += r"(?!\w)"
+            else:
+                pattern = rf"(?<!\w){pattern}(?!\w)"
+            clauses.append("(message REGEXP ? OR raw REGEXP ? OR hostname REGEXP ? OR source_ip REGEXP ? OR app_name REGEXP ?)")
+            params.extend([pattern] * 5)
         if severity is not None:
             clauses.append("severity=?"); params.append(int(severity))
         where = " WHERE " + " AND ".join(clauses) if clauses else ""
