@@ -211,3 +211,20 @@ def test_optional_received_date_filters_calendar_day_and_preserves_pagination(tm
     assert len(first) == len(second) == 1
     assert first[0]["id"] > second[0]["id"]
     store.close()
+
+
+def test_unfiltered_dashboard_page_uses_incremental_count_instead_of_window(tmp_path):
+    store = LogStore(tmp_path / "dashboard-page.db")
+    store.insert(parse_syslog("first event", "10.0.0.1", "UDP"))
+    store.insert(parse_syslog("second event", "10.0.0.2", "UDP"))
+    assert store.performance_metrics_ready is True
+    statements = []
+    store.db.set_trace_callback(statements.append)
+    rows, total = store.list_messages(limit=1)
+    store.db.set_trace_callback(None)
+    selects = [sql.upper() for sql in statements if sql.lstrip().upper().startswith("SELECT")]
+    assert total == 2 and len(rows) == 1
+    assert len(selects) == 2
+    assert not any("COUNT(*) OVER()" in sql or "COUNT(*) FROM MESSAGES" in sql for sql in selects)
+    assert any("PERFORMANCE_COUNTERS" in sql for sql in selects)
+    store.close()

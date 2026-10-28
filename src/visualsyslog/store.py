@@ -453,7 +453,23 @@ class LogStore:
             clauses.append("messages.received_at>=? AND messages.received_at<?")
             params.extend((day.isoformat(), next_day.isoformat()))
         where = " WHERE " + " AND ".join(clauses) if clauses else ""
-        # Return the page and its total in one pass. The previous implementation
+        if not clauses:
+            # The live dashboard requests this unfiltered page every two seconds.
+            # Avoid a window count over every message; use the incremental counter
+            # when available and keep the legacy count only during counter migration.
+            rows = self.db.execute(
+                "SELECT messages.* FROM messages ORDER BY messages.id DESC LIMIT ? OFFSET ?",
+                (limit, offset)
+            ).fetchall()
+            if self._metrics_ready:
+                count_row = self.db.execute(
+                    "SELECT value FROM performance_counters WHERE key='messages'"
+                ).fetchone()
+                total = int(count_row[0]) if count_row else 0
+            else:
+                total = int(self.db.execute("SELECT COUNT(*) FROM messages").fetchone()[0])
+            return rows, total
+        # Return filtered pages and their total in one pass. The previous implementation
         # evaluated the same FTS/REGEXP predicates once for the page and again
         # for COUNT(*), doubling work on large databases.
         rows = self.db.execute(
