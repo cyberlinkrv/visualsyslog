@@ -237,3 +237,26 @@ def test_search_api_reports_when_fts_index_is_building(tmp_path):
         assert response.status_code == 503
         assert "42%" in response.json()["detail"]
         app.state.store._set_index_state(ready=True, progress=100)
+
+
+def test_search_api_accepts_optional_date_and_rejects_invalid_date(tmp_path):
+    from visualsyslog.server import parse_syslog
+
+    app = create_app(data_dir=tmp_path, udp_host="127.0.0.1", udp_port=0,
+                     tcp_host="127.0.0.1", tcp_port=0)
+    with TestClient(app) as client:
+        store = app.state.store
+        for message, timestamp in [
+            ("target older", "2025-05-01T23:59:59.999+00:00"),
+            ("target day", "2025-05-02T00:00:00.000+00:00"),
+        ]:
+            store.insert(parse_syslog(message, "192.0.2.1", "UDP"))
+            with store.db:
+                store.db.execute("UPDATE messages SET received_at=? WHERE message=?", (timestamp, message))
+        without_date = client.get("/api/messages", params={"search": "target"})
+        with_date = client.get("/api/messages", params={"search": "target", "date": "2025-05-02"})
+        invalid = client.get("/api/messages", params={"search": "target", "date": "not-a-date"})
+        assert without_date.status_code == 200 and without_date.json()["total"] == 2
+        assert with_date.status_code == 200 and with_date.json()["total"] == 1
+        assert with_date.json()["items"][0]["message"] == "target day"
+        assert invalid.status_code == 422

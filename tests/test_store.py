@@ -170,6 +170,9 @@ def test_search_uses_fts5_instead_of_regex_full_scan(tmp_path):
     store.db.set_trace_callback(None)
     assert total == 1 and len(rows) == 1
     assert any("messages_fts MATCH" in sql for sql in statements)
+    select_statements = [sql for sql in statements if sql.lstrip().upper().startswith("SELECT")]
+    assert len(select_statements) == 1
+    assert "COUNT(*) OVER()" in select_statements[0]
     store.close()
 
 
@@ -184,4 +187,27 @@ def test_expiration_waits_for_fts_backfill(tmp_path):
     assert store.stats()["total"] == 1
     store._set_index_state(ready=True, progress=100)
     assert store.purge_expired() == 1
+    store.close()
+
+
+def test_optional_received_date_filters_calendar_day_and_preserves_pagination(tmp_path):
+    store = LogStore(tmp_path / "date-search.db")
+    for text, timestamp in [
+        ("previous day", "2025-04-30T23:59:59.999+00:00"),
+        ("target early", "2025-05-01T00:00:00.000+00:00"),
+        ("target late", "2025-05-01T23:59:59.999+00:00"),
+        ("next day", "2025-05-02T00:00:00.000+00:00"),
+    ]:
+        store.insert(parse_syslog(text, "192.0.2.1", "UDP"))
+        with store.db:
+            store.db.execute("UPDATE messages SET received_at=? WHERE message=?", (timestamp, text))
+    all_rows, all_total = store.list_messages(search="target")
+    day_rows, day_total = store.list_messages(search="target", received_date="2025-05-01")
+    assert all_total == 2 and len(all_rows) == 2
+    assert day_total == 2 and {row["message"] for row in day_rows} == {"target early", "target late"}
+    first, first_total = store.list_messages(limit=1, search="target", received_date="2025-05-01")
+    second, second_total = store.list_messages(limit=1, offset=1, search="target", received_date="2025-05-01")
+    assert first_total == second_total == 2
+    assert len(first) == len(second) == 1
+    assert first[0]["id"] > second[0]["id"]
     store.close()

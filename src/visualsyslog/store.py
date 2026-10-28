@@ -433,7 +433,7 @@ class LogStore:
         return patterns
 
     def _list_query(self, limit: int, offset: int, patterns: list[str], severity: int | None,
-                    expression: str | None, use_fts: bool):
+                    expression: str | None, use_fts: bool, received_date: str | None):
         clauses = []
         params = []
         from_sql = "messages"
@@ -445,15 +445,31 @@ class LogStore:
             clauses.append("(messages.message REGEXP ? OR messages.raw REGEXP ? OR messages.hostname REGEXP ? OR messages.source_ip REGEXP ? OR messages.app_name REGEXP ?)")
             params.extend([pattern] * 5)
         if severity is not None:
-            clauses.append("severity=?")
+            clauses.append("messages.severity=?")
             params.append(int(severity))
+        if received_date:
+            day = datetime.strptime(received_date, "%Y-%m-%d").date()
+            next_day = day + timedelta(days=1)
+            clauses.append("messages.received_at>=? AND messages.received_at<?")
+            params.extend((day.isoformat(), next_day.isoformat()))
         where = " WHERE " + " AND ".join(clauses) if clauses else ""
-        rows = self.db.execute(f"SELECT messages.* FROM {from_sql}{where} ORDER BY messages.id DESC LIMIT ? OFFSET ?",
-                               (*params,limit,offset)).fetchall()
-        total = self.db.execute(f"SELECT COUNT(*) FROM {from_sql}{where}",params).fetchone()[0]
+        # Return the page and its total in one pass. The previous implementation
+        # evaluated the same FTS/REGEXP predicates once for the page and again
+        # for COUNT(*), doubling work on large databases.
+        rows = self.db.execute(
+            f"SELECT messages.*,COUNT(*) OVER() AS __total FROM {from_sql}{where} "
+            "ORDER BY messages.id DESC LIMIT ? OFFSET ?", (*params, limit, offset)
+        ).fetchall()
+        if rows:
+            total = int(rows[0]["__total"])
+        elif offset:
+            # An out-of-range page has no row from which to read the window count.
+            total = int(self.db.execute(f"SELECT COUNT(*) FROM {from_sql}{where}", params).fetchone()[0])
+        else:
+            total = 0
         return rows,total
 
-    def list_messages(self, limit=200, offset=0, search="", severity=None):
+    def list_messages(self, limit=200, offset=0, search="", severity=None, received_date=None):
         limit = max(1,min(int(limit),1000))
         offset = max(0,int(offset))
         patterns = self._patterns(search)
@@ -461,12 +477,12 @@ class LogStore:
         with self.lock:
             use_fts = self._fts_available and self._fts_ready and expression is not None
             try:
-                rows,total = self._list_query(limit,offset,patterns,severity,expression,use_fts)
+                rows,total = self._list_query(limit,offset,patterns,severity,expression,use_fts,received_date)
             except sqlite3.OperationalError:
                 if not use_fts:
                     raise
-                rows,total = self._list_query(limit,offset,patterns,severity,None,False)
-        return [dict(r) for r in rows],int(total)
+                rows,total = self._list_query(limit,offset,patterns,severity,None,False,received_date)
+        return [{key: value for key, value in dict(r).items() if key != "__total"} for r in rows],int(total)
 
     def stats(self):
         with self.lock:
