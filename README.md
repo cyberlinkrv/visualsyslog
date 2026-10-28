@@ -38,6 +38,28 @@ Depois de iniciar, abra **http://127.0.0.1:8080**. Por padrão, o coletor escuta
 
 Os executáveis Windows não possuem assinatura digital Authenticode. O instalador foi compilado sem UPX e passou pelo smoke test do Windows CI, mas isso **não garante** que o Microsoft Defender ou outro antivírus deixará de exibir um alerta. A reputação pode variar entre computadores; confira o arquivo e seu SHA-256 antes de distribuir em ambientes de produção.
 
+### Diagnóstico do painel no Windows
+
+Se o painel não abrir em `http://127.0.0.1:8080`, deixe o VisualSyslog em execução, abra o PowerShell e execute este diagnóstico:
+
+```powershell
+$listen = Get-NetTCPConnection -State Listen -LocalPort 8080 -ErrorAction SilentlyContinue
+if ($listen) {
+  $listen | Select-Object LocalAddress, LocalPort, OwningProcess
+  Get-Process -Id $listen[0].OwningProcess | Select-Object Id, ProcessName, Path
+} else {
+  "NENHUM PROCESSO ESCUTANDO NA PORTA 8080"
+}
+
+try {
+  (Invoke-WebRequest http://127.0.0.1:8080 -TimeoutSec 5).StatusCode
+} catch {
+  $_.Exception.Message
+}
+```
+
+O comando é somente diagnóstico: não inicia nem encerra processos e não altera o banco de dados. Se não houver processo escutando ou o pedido HTTP falhar, confirme que o VisualSyslog está aberto e consulte `%LOCALAPPDATA%\VisualSyslog\logs\visualsyslog-startup.log`. Se a resposta for `200`, o servidor está respondendo; tente abrir o endereço acima manualmente no navegador.
+
 ### Compilar a partir do código-fonte
 
 Requer Python 3.10 ou superior. Para desenvolvimento e testes:
@@ -88,6 +110,28 @@ After launch, open **http://127.0.0.1:8080**. By default, the collector listens 
 ### Windows security notice
 
 The Windows binaries are not Authenticode code-signed. The installer is built without UPX and passed the Windows CI smoke test, but this **does not guarantee** that Microsoft Defender or another antivirus will never show an alert. Reputation can vary between computers; verify the file and its SHA-256 before distributing it in production environments.
+
+### Windows dashboard diagnostics
+
+If the dashboard does not open at `http://127.0.0.1:8080`, leave VisualSyslog running, open PowerShell, and run this diagnostic:
+
+```powershell
+$listen = Get-NetTCPConnection -State Listen -LocalPort 8080 -ErrorAction SilentlyContinue
+if ($listen) {
+  $listen | Select-Object LocalAddress, LocalPort, OwningProcess
+  Get-Process -Id $listen[0].OwningProcess | Select-Object Id, ProcessName, Path
+} else {
+  "NO PROCESS LISTENING ON PORT 8080"
+}
+
+try {
+  (Invoke-WebRequest http://127.0.0.1:8080 -TimeoutSec 5).StatusCode
+} catch {
+  $_.Exception.Message
+}
+```
+
+This command is diagnostic only: it does not start or stop processes and does not modify the database. If no process is listening or the HTTP request fails, confirm VisualSyslog is open and check `%LOCALAPPDATA%\VisualSyslog\logs\visualsyslog-startup.log`. If the response is `200`, the server is responding; try opening the URL above manually in your browser.
 
 ### Build from source
 
