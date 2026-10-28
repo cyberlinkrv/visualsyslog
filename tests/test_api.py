@@ -10,7 +10,7 @@ def test_dashboard_and_retention_api(tmp_path):
         page = client.get("/")
         assert page.status_code == 200
         assert "VisualSyslog" in page.text
-        assert "VisualSyslog 2.6.0" in page.text
+        assert "VisualSyslog 2.6.1" in page.text
         stats = client.get("/api/stats").json()
         assert stats["retention_days"] == 1095
         assert stats["performance_ready"] is True
@@ -173,6 +173,9 @@ def test_search_api_returns_precise_message_matches(tmp_path):
         assert data["total"] == 1
         assert len(data["items"]) == 1
         assert "10.20.30.40" in data["items"][0]["message"]
+        assert "raw" in data["items"][0]  # Keep the existing API default for other clients.
+        compact = client.get("/api/messages", params={"search": "10.20.30.40", "include_raw": "false"})
+        assert compact.status_code == 200 and "raw" not in compact.json()["items"][0]
         assert client.get("/api/messages", params={"search": '"connection from 10.20.30.40"'}).json()["total"] == 1
         assert client.get("/api/messages", params={"search": "x" * 201}).status_code == 422
 
@@ -251,7 +254,7 @@ def test_search_api_accepts_optional_date_and_rejects_invalid_date(tmp_path):
             ("target day", "2025-05-02T00:00:00.000+00:00"),
         ]:
             store.insert(parse_syslog(message, "192.0.2.1", "UDP"))
-            with store.db:
+            with store.lock, store.db:
                 store.db.execute("UPDATE messages SET received_at=? WHERE message=?", (timestamp, message))
         without_date = client.get("/api/messages", params={"search": "target"})
         with_date = client.get("/api/messages", params={"search": "target", "date": "2025-05-02"})

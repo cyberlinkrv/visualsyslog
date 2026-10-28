@@ -1,6 +1,6 @@
 # VisualSyslog — Syslog Observability
 
-**Versão atual / Current version: 2.6.0** · Licença / License: **GPL-2.0**
+**Versão estável / Current stable release: 2.6.0** · **Build de teste na branch / Branch test build: 2.6.1** · Licença / License: **GPL-2.0**
 
 [Português (Brasil)](#português-brasil) | [English](#english) | [Baixar versão 2.6.0 / Download v2.6.0](https://github.com/cyberlinkrv/visualsyslog/releases/tag/v2.6.0)
 
@@ -33,6 +33,14 @@ Depois de iniciar, abra **http://127.0.0.1:8080**. Por padrão, o coletor escuta
 - Configuração de caminho do banco, IP de escuta, portas UDP/TCP e idioma. No Windows, há também a opção de iniciar junto com a sessão do usuário.
 
 **Ao abrir pela primeira vez um banco antigo:** a 2.6.0 preserva os dados existentes e prepara os contadores e o índice de busca em segundo plano, em lotes que podem continuar após reiniciar o aplicativo. A coleta e o painel permanecem ativos; somente a busca textual e a limpeza de retenção aguardam o fim dessa preparação. O índice acrescenta espaço ao próprio arquivo `.db`; não cria um segundo banco permanente.
+
+### Otimizações em teste na versão 2.6.1
+
+- O índice FTS5 foi reduzido para indexar o payload Syslog original (`raw`) e o IP de origem, evitando indexar novamente campos que já aparecem dentro do payload. As frases entre aspas continuam suportadas.
+- Novos payloads `raw` são comprimidos no armazenamento. Os registros antigos são preservados e permanecem em texto; o upgrade não apaga mensagens.
+- A interface não solicita o campo `raw` em cada atualização. Clientes da API continuam recebendo-o por padrão e podem usar `include_raw=false` para respostas menores.
+- Ao abrir um banco existente, o índice anterior é substituído e reconstruído em lotes que podem ser retomados após reiniciar. Durante a reconstrução, a coleta e o painel continuam ativos, mas buscas textuais aguardam o término.
+- O SQLite pode reutilizar páginas liberadas sem reduzir imediatamente o tamanho físico do `.db`. A compactação física (`VACUUM`) exige espaço livre adicional e deve ser feita separadamente, com backup.
 
 ### Aviso de segurança do Windows
 
@@ -106,6 +114,14 @@ After launch, open **http://127.0.0.1:8080**. By default, the collector listens 
 - Configure the database path, bind IP, UDP/TCP ports, and language. Windows also supports starting automatically when the user signs in.
 
 **First launch with an existing database:** version 2.6.0 preserves existing data and prepares counters and the search index in the background, in batches that resume after an application restart. Log collection and the dashboard remain active; only text search and retention cleanup wait for preparation to finish. The index uses additional space inside the same `.db` file; no permanent second database is created.
+
+### Optimizations under test in version 2.6.1
+
+- The FTS5 index now indexes the original Syslog payload (`raw`) and source IP, instead of indexing fields already present inside the payload a second time. Quoted phrase searches remain supported.
+- New `raw` payloads are compressed in storage. Existing records are preserved and remain readable; the upgrade does not delete messages.
+- The UI no longer requests the `raw` field on every refresh. API clients still receive it by default and can use `include_raw=false` for smaller responses.
+- On an existing database, the old index is replaced and rebuilt in resumable batches. Collection and the dashboard stay active, but text searches wait until indexing is complete.
+- SQLite may reuse freed pages without immediately reducing the `.db` file's physical size. Physical compaction (`VACUUM`) needs additional free disk space and should be done separately, with a backup.
 
 ### Windows security notice
 
