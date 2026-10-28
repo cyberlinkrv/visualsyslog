@@ -6,7 +6,7 @@ import os
 import re
 import sqlite3
 from contextlib import asynccontextmanager, suppress
-from datetime import datetime, timezone
+from datetime import date, datetime, timezone
 from pathlib import Path
 from typing import Literal
 
@@ -135,7 +135,7 @@ def create_app(data_dir: Path | str | None = None, udp_host: str | None = None, 
                 await app.state.maintenance_task
             store.close()
 
-    app = FastAPI(title="VisualSyslog", version="2.6.0", lifespan=lifespan)
+    app = FastAPI(title="VisualSyslog", version="2.6.1", lifespan=lifespan)
     app.state.store = store
     app.state.config_file = config_file
     app.state.bind_ip = bind_ip
@@ -167,7 +167,9 @@ def create_app(data_dir: Path | str | None = None, udp_host: str | None = None, 
 
     @app.get("/api/messages")
     async def messages(limit: int = Query(200, ge=1, le=1000), offset: int = Query(0, ge=0),
-                       search: str = Query("", max_length=200), severity: int | None = Query(None, ge=0, le=7)):
+                       search: str = Query("", max_length=200), severity: int | None = Query(None, ge=0, le=7),
+                       received_date: date | None = Query(None, alias="date"),
+                       include_raw: bool = Query(True)):
         index_status = store.search_index_status()
         if search.strip() and index_status["available"] and not index_status["ready"]:
             if saved.get("language", "pt-BR") == "en-US":
@@ -175,7 +177,9 @@ def create_app(data_dir: Path | str | None = None, udp_host: str | None = None, 
             else:
                 detail = f"O índice rápido de busca está sendo preparado ({index_status['progress']}%). Tente novamente em instantes."
             raise HTTPException(status_code=503, detail=detail)
-        rows, total = store.list_messages(limit, offset, search, severity)
+        rows, total = store.list_messages(limit, offset, search, severity,
+                                          received_date.isoformat() if received_date else None,
+                                          include_raw=include_raw)
         return {"items": rows, "total": total}
 
     @app.get("/api/stats")
