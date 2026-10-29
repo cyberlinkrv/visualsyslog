@@ -416,10 +416,14 @@ class LogStore:
             return int(cur.lastrowid)
 
     @staticmethod
-    def _patterns(search: str) -> list[str]:
+    def _patterns(search: str, use_fts: bool = False) -> list[str]:
         patterns = []
         for term, exact_phrase in _search_terms(search):
             if not term:
+                continue
+            simple_token = r"[^\W_]+"
+            if use_fts and (re.fullmatch(simple_token, term) or (exact_phrase and re.fullmatch(rf"{simple_token}(?:\s+{simple_token})*", term))):
+                # FTS5 already enforces whole-token and quoted-phrase matching.
                 continue
             pattern = re.escape(term)
             if exact_phrase:
@@ -456,17 +460,75 @@ class LogStore:
     def list_messages(self, limit=200, offset=0, search="", severity=None):
         limit = max(1,min(int(limit),1000))
         offset = max(0,int(offset))
-        patterns = self._patterns(search)
         expression = _fts_query(search) if search else None
         with self.lock:
             use_fts = self._fts_available and self._fts_ready and expression is not None
+            patterns = self._patterns(search, use_fts)
             try:
                 rows,total = self._list_query(limit,offset,patterns,severity,expression,use_fts)
             except sqlite3.OperationalError:
                 if not use_fts:
                     raise
-                rows,total = self._list_query(limit,offset,patterns,severity,None,False)
+                rows,total = self._list_query(limit,offset,self._patterns(search, False),severity,None,False)
         return [dict(r) for r in rows],int(total)
+
+    def latest_messages(self, limit=200, offset=0):
+        """Read recent rows for dashboard refresh without recounting the database."""
+        limit = max(1, min(int(limit), 1000))
+        offset = max(0, int(offset))
+        with self.lock:
+            rows = self.db.execute(
+                "SELECT * FROM messages ORDER BY id DESC LIMIT ? OFFSET ?", (limit, offset)
+            ).fetchall()
+        return [dict(row) for row in rows]
+
+    def search_page(self, limit=100, offset=0, search="", severity=None,
+                    date_from=None, date_to=None):
+        """Return one recent-first search page without counting every match."""
+        limit = max(1, min(int(limit), 100))
+        offset = max(0, int(offset))
+        expression = _fts_query(search) if search else None
+
+        def fetch_page(use_fts: bool):
+            patterns = self._patterns(search, use_fts)
+            clauses, params = [], []
+            from_sql = "messages"
+            order = "messages.id DESC"
+            if use_fts:
+                from_sql = "messages JOIN messages_fts ON messages_fts.rowid=messages.id"
+                clauses.append("messages_fts MATCH ?")
+                params.append(expression)
+                # FTS5 can emit matching rowids newest-first without a temporary sort.
+                order = "messages_fts.rowid DESC"
+            for pattern in patterns:
+                clauses.append("(messages.message REGEXP ? OR messages.raw REGEXP ? OR messages.hostname REGEXP ? OR messages.source_ip REGEXP ? OR messages.app_name REGEXP ?)")
+                params.extend([pattern] * 5)
+            if severity is not None:
+                clauses.append("messages.severity=?")
+                params.append(int(severity))
+            if date_from is not None:
+                clauses.append("messages.received_at>=?")
+                params.append(f"{date_from.isoformat()}T00:00:00.000+00:00")
+            if date_to is not None:
+                next_day = date_to + timedelta(days=1)
+                clauses.append("messages.received_at<?")
+                params.append(f"{next_day.isoformat()}T00:00:00.000+00:00")
+            where = " WHERE " + " AND ".join(clauses) if clauses else ""
+            return self.db.execute(
+                f"SELECT messages.* FROM {from_sql}{where} ORDER BY {order} LIMIT ? OFFSET ?",
+                (*params, limit + 1, offset),
+            ).fetchall()
+
+        with self.lock:
+            use_fts = self._fts_available and self._fts_ready and expression is not None
+            try:
+                rows = fetch_page(use_fts)
+            except sqlite3.OperationalError:
+                if not use_fts:
+                    raise
+                rows = fetch_page(False)
+        has_more = len(rows) > limit
+        return [dict(row) for row in rows[:limit]], has_more
 
     def stats(self):
         with self.lock:

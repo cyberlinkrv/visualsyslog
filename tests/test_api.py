@@ -10,7 +10,7 @@ def test_dashboard_and_retention_api(tmp_path):
         page = client.get("/")
         assert page.status_code == 200
         assert "VisualSyslog" in page.text
-        assert "VisualSyslog 2.6.0" in page.text
+        assert "VisualSyslog 2.6.1" in page.text
         stats = client.get("/api/stats").json()
         assert stats["retention_days"] == 1095
         assert stats["performance_ready"] is True
@@ -237,3 +237,51 @@ def test_search_api_reports_when_fts_index_is_building(tmp_path):
         assert response.status_code == 503
         assert "42%" in response.json()["detail"]
         app.state.store._set_index_state(ready=True, progress=100)
+
+
+
+def test_fast_search_api_caps_page_at_100_and_skips_total_count(tmp_path):
+    from visualsyslog.server import parse_syslog
+
+    app = create_app(data_dir=tmp_path, udp_host="127.0.0.1", udp_port=0,
+                     tcp_host="127.0.0.1", tcp_port=0)
+    with TestClient(app) as client:
+        for i in range(115):
+            app.state.store.insert(parse_syslog(f"needle event {i}", f"192.0.2.{i % 200 + 1}", "UDP"))
+        with app.state.store.db:
+            app.state.store.db.execute(
+                "UPDATE messages SET received_at='2026-10-29T12:00:00.000+00:00'"
+            )
+        response = client.get("/api/messages", params={
+            "search": "needle", "fast": "true", "limit": 1000,
+            "date_from": "2026-10-29", "date_to": "2026-10-29",
+        })
+        assert response.status_code == 200, response.text
+        payload = response.json()
+        assert len(payload["items"]) == 100
+        assert payload["has_more"] is True
+        assert payload["total"] is None
+        invalid = client.get("/api/messages", params={
+            "search": "needle", "fast": "true", "date_from": "2026-10-30", "date_to": "2026-10-29",
+        })
+        assert invalid.status_code == 422
+
+
+
+def test_fast_dashboard_stream_does_not_count_all_messages(tmp_path):
+    from visualsyslog.server import parse_syslog
+
+    app = create_app(data_dir=tmp_path, udp_host="127.0.0.1", udp_port=0,
+                     tcp_host="127.0.0.1", tcp_port=0)
+    with TestClient(app) as client:
+        for i in range(4):
+            app.state.store.insert(parse_syslog(f"recent event {i}", f"192.0.2.{i + 1}", "UDP"))
+        statements = []
+        app.state.store.db.set_trace_callback(statements.append)
+        response = client.get("/api/messages", params={"limit": 200, "fast": "true"})
+        app.state.store.db.set_trace_callback(None)
+        assert response.status_code == 200
+        assert len(response.json()["items"]) == 4
+        assert response.json()["total"] is None
+        assert not any("COUNT(*) FROM messages" in sql for sql in statements)
+        assert any("ORDER BY id DESC LIMIT 200" in sql for sql in statements)

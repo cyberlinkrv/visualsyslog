@@ -1,6 +1,7 @@
 #!/usr/bin/env bash
 set -euo pipefail
-VERSION="${1:-2.6.0}"
+VERSION="${1:-$(awk -F'"' '/^version = / { print $2; exit }' pyproject.toml)}"
+[[ -n "$VERSION" ]] || { echo "Could not determine package version" >&2; exit 1; }
 ARCH="$(dpkg --print-architecture)"
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 cd "$ROOT"

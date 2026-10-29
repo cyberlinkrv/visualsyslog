@@ -6,7 +6,7 @@ import os
 import re
 import sqlite3
 from contextlib import asynccontextmanager, suppress
-from datetime import datetime, timezone
+from datetime import date, datetime, timezone
 from pathlib import Path
 from typing import Literal
 
@@ -167,7 +167,9 @@ def create_app(data_dir: Path | str | None = None, udp_host: str | None = None, 
 
     @app.get("/api/messages")
     async def messages(limit: int = Query(200, ge=1, le=1000), offset: int = Query(0, ge=0),
-                       search: str = Query("", max_length=200), severity: int | None = Query(None, ge=0, le=7)):
+                       search: str = Query("", max_length=200), severity: int | None = Query(None, ge=0, le=7),
+                       fast: bool = Query(False), date_from: date | None = Query(None),
+                       date_to: date | None = Query(None)):
         index_status = store.search_index_status()
         if search.strip() and index_status["available"] and not index_status["ready"]:
             if saved.get("language", "pt-BR") == "en-US":
@@ -175,8 +177,16 @@ def create_app(data_dir: Path | str | None = None, udp_host: str | None = None, 
             else:
                 detail = f"O índice rápido de busca está sendo preparado ({index_status['progress']}%). Tente novamente em instantes."
             raise HTTPException(status_code=503, detail=detail)
+        if date_from and date_to and date_to < date_from:
+            raise HTTPException(status_code=422, detail="date_to must be on or after date_from")
+        if fast and search.strip():
+            rows, has_more = store.search_page(min(limit, 100), offset, search, severity, date_from, date_to)
+            return {"items": rows, "total": None, "has_more": has_more}
+        if fast and severity is None and date_from is None and date_to is None:
+            rows = store.latest_messages(limit, offset)
+            return {"items": rows, "total": None, "has_more": False}
         rows, total = store.list_messages(limit, offset, search, severity)
-        return {"items": rows, "total": total}
+        return {"items": rows, "total": total, "has_more": False}
 
     @app.get("/api/stats")
     async def stats():

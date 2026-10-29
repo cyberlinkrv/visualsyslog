@@ -1,4 +1,4 @@
-from datetime import datetime, timedelta, timezone
+from datetime import date, datetime, timedelta, timezone
 
 import pytest
 
@@ -184,4 +184,44 @@ def test_expiration_waits_for_fts_backfill(tmp_path):
     assert store.stats()["total"] == 1
     store._set_index_state(ready=True, progress=100)
     assert store.purge_expired() == 1
+    store.close()
+
+
+def test_fast_search_returns_100_without_count_or_temporary_sort(tmp_path):
+    store = LogStore(tmp_path / "fast-search.db")
+    for i in range(225):
+        store.insert(parse_syslog(f"needle event {i}", f"192.0.2.{i % 200 + 1}", "UDP"))
+    statements = []
+    store.db.set_trace_callback(statements.append)
+    first, more = store.search_page(limit=100, offset=0, search="needle")
+    second, second_more = store.search_page(limit=100, offset=100, search="needle")
+    store.db.set_trace_callback(None)
+    assert len(first) == len(second) == 100
+    assert more is True and second_more is True
+    assert first[0]["id"] > second[0]["id"]
+    assert any("ORDER BY messages_fts.rowid DESC" in sql for sql in statements)
+    assert not any("COUNT(*)" in sql for sql in statements)
+    plan = store.db.execute(
+        "EXPLAIN QUERY PLAN SELECT messages.* FROM messages "
+        "JOIN messages_fts ON messages_fts.rowid=messages.id "
+        "WHERE messages_fts MATCH ? ORDER BY messages_fts.rowid DESC LIMIT 101",
+        ("needle",),
+    ).fetchall()
+    assert not any("USE TEMP B-TREE" in str(row[3]) for row in plan)
+    store.close()
+
+
+def test_fast_search_accepts_inclusive_utc_date_range(tmp_path):
+    store = LogStore(tmp_path / "fast-search-dates.db")
+    old_id = store.insert(parse_syslog("needle yesterday", "192.0.2.1", "UDP"))
+    today_id = store.insert(parse_syslog("needle today", "192.0.2.2", "UDP"))
+    with store.db:
+        store.db.execute("UPDATE messages SET received_at=? WHERE id=?",
+                         ("2026-10-28T23:59:59.000+00:00", old_id))
+        store.db.execute("UPDATE messages SET received_at=? WHERE id=?",
+                         ("2026-10-29T12:00:00.000+00:00", today_id))
+    rows, has_more = store.search_page(search="needle", date_from=date(2026, 10, 29),
+                                        date_to=date(2026, 10, 29))
+    assert [row["id"] for row in rows] == [today_id]
+    assert has_more is False
     store.close()
