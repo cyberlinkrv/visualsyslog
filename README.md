@@ -1,8 +1,8 @@
 # VisualSyslog — Syslog Observability
 
-**Versão estável / Current stable release: 2.6.1** · Licença / License: **GPL-2.0**
+**Versão estável / Current stable release: 2.6.2** · Licença / License: **GPL-2.0**
 
-[Português (Brasil)](#português-brasil) | [English](#english) | [Baixar versão 2.6.1 / Download v2.6.1](https://github.com/cyberlinkrv/visualsyslog/releases/tag/v2.6.1) | [Notas da versão / Release notes](CHANGELOG.md)
+[Português (Brasil)](#português-brasil) | [English](#english) | [Baixar versão 2.6.2 / Download v2.6.2](https://github.com/cyberlinkrv/visualsyslog/releases/tag/v2.6.2) | [Notas da versão / Release notes](CHANGELOG.md)
 
 ![Painel do VisualSyslog / VisualSyslog dashboard preview](docs/images/visualsyslog-dashboard-2.6.0.png)
 
@@ -12,14 +12,14 @@
 
 O **VisualSyslog** recebe mensagens Syslog por UDP e TCP e as apresenta em um painel web local. Armazena os eventos em SQLite, permite pesquisar mensagens e configurar retenção e rede pela interface.
 
-### Baixar a versão 2.6.1
+### Baixar a versão 2.6.2
 
 | Sistema | Download | Instalação/uso |
 |---|---|---|
-| Windows — instalador recomendado | [VisualSyslog-Setup.exe](https://github.com/cyberlinkrv/visualsyslog/releases/download/v2.6.1/VisualSyslog-Setup.exe) | Execute o instalador e siga as instruções. |
-| Windows — portátil | [VisualSyslog.exe](https://github.com/cyberlinkrv/visualsyslog/releases/download/v2.6.1/VisualSyslog.exe) | Execute sem instalar. |
-| Debian/Ubuntu — 64 bits (amd64) | [visualsyslog_2.6.1_amd64.deb](https://github.com/cyberlinkrv/visualsyslog/releases/download/v2.6.1/visualsyslog_2.6.1_amd64.deb) | `sudo apt install ./visualsyslog_2.6.1_amd64.deb` |
-| Todos os arquivos e verificações | [Release 2.6.1 e SHA-256](https://github.com/cyberlinkrv/visualsyslog/releases/tag/v2.6.1) | A página contém downloads e hashes SHA-256. |
+| Windows — instalador recomendado | [VisualSyslog-Setup.exe](https://github.com/cyberlinkrv/visualsyslog/releases/download/v2.6.2/VisualSyslog-Setup.exe) | Execute o instalador e siga as instruções. |
+| Windows — portátil | [VisualSyslog.exe](https://github.com/cyberlinkrv/visualsyslog/releases/download/v2.6.2/VisualSyslog.exe) | Execute sem instalar. |
+| Debian/Ubuntu — 64 bits (amd64) | [visualsyslog_2.6.2_amd64.deb](https://github.com/cyberlinkrv/visualsyslog/releases/download/v2.6.2/visualsyslog_2.6.2_amd64.deb) | `sudo apt install ./visualsyslog_2.6.2_amd64.deb` |
+| Todos os arquivos e verificações | [Release 2.6.2 e SHA-256](https://github.com/cyberlinkrv/visualsyslog/releases/tag/v2.6.2) | A página contém downloads e hashes SHA-256. |
 
 Depois de iniciar, abra **http://127.0.0.1:8080**. Por padrão, o coletor escuta Syslog em **UDP e TCP na porta 5514**; IP, portas e demais opções podem ser alterados em **Configurações**.
 
@@ -33,6 +33,14 @@ Depois de iniciar, abra **http://127.0.0.1:8080**. Por padrão, o coletor escuta
 - Configuração de caminho do banco, IP de escuta, portas UDP/TCP e idioma. No Windows, há também a opção de iniciar junto com a sessão do usuário.
 
 **Ao abrir pela primeira vez um banco antigo:** a 2.6.0 preserva os dados existentes e prepara os contadores e o índice de busca em segundo plano, em lotes que podem continuar após reiniciar o aplicativo. A coleta e o painel permanecem ativos; somente a busca textual e a limpeza de retenção aguardam o fim dessa preparação. O índice acrescenta espaço ao próprio arquivo `.db`; não cria um segundo banco permanente.
+
+### Novidades da versão 2.6.2
+
+- A busca apresenta até **100 linhas por página**, da mensagem mais recente para a mais antiga, mantendo o filtro por uma data específica.
+- O painel mostra a página atual e se há mais resultados, sem bloquear a resposta para contar milhões de correspondências. Isso reduz a espera em buscas que encontram muitos registros.
+- O caminho rápido usa o índice FTS5 sem ordenação temporária de todos os acertos; a atualização periódica do fluxo também evita contagem completa. A API mantém o formato tradicional por padrão e oferece o modo rápido com `fast=true`.
+
+Veja as [notas da versão 2.6.2](CHANGELOG.md#262--2026-10-29).
 
 ### O que há na versão 2.6.1
 
@@ -95,14 +103,14 @@ Esta modernização em Python é um fork do VisualSyslog original de Max Belkov.
 
 **VisualSyslog** receives Syslog messages over UDP and TCP and displays them in a local web dashboard. Events are stored in SQLite, with message search, configurable retention, and network settings available in the UI.
 
-### Download version 2.6.1
+### Download version 2.6.2
 
 | Platform | Download | Install/use |
 |---|---|---|
-| Windows — recommended installer | [VisualSyslog-Setup.exe](https://github.com/cyberlinkrv/visualsyslog/releases/download/v2.6.1/VisualSyslog-Setup.exe) | Run the installer and follow the prompts. |
-| Windows — portable | [VisualSyslog.exe](https://github.com/cyberlinkrv/visualsyslog/releases/download/v2.6.1/VisualSyslog.exe) | Run without installing. |
-| Debian/Ubuntu — 64-bit (amd64) | [visualsyslog_2.6.1_amd64.deb](https://github.com/cyberlinkrv/visualsyslog/releases/download/v2.6.1/visualsyslog_2.6.1_amd64.deb) | `sudo apt install ./visualsyslog_2.6.1_amd64.deb` |
-| All files and verification | [Release 2.6.1 and SHA-256](https://github.com/cyberlinkrv/visualsyslog/releases/tag/v2.6.1) | The page includes downloads and SHA-256 hashes. |
+| Windows — recommended installer | [VisualSyslog-Setup.exe](https://github.com/cyberlinkrv/visualsyslog/releases/download/v2.6.2/VisualSyslog-Setup.exe) | Run the installer and follow the prompts. |
+| Windows — portable | [VisualSyslog.exe](https://github.com/cyberlinkrv/visualsyslog/releases/download/v2.6.2/VisualSyslog.exe) | Run without installing. |
+| Debian/Ubuntu — 64-bit (amd64) | [visualsyslog_2.6.2_amd64.deb](https://github.com/cyberlinkrv/visualsyslog/releases/download/v2.6.2/visualsyslog_2.6.2_amd64.deb) | `sudo apt install ./visualsyslog_2.6.2_amd64.deb` |
+| All files and verification | [Release 2.6.2 and SHA-256](https://github.com/cyberlinkrv/visualsyslog/releases/tag/v2.6.2) | The page includes downloads and SHA-256 hashes. |
 
 After launch, open **http://127.0.0.1:8080**. By default, the collector listens for Syslog over **UDP and TCP on port 5514**. Change the bind IP, ports, and other options in **Settings**.
 
@@ -116,6 +124,14 @@ After launch, open **http://127.0.0.1:8080**. By default, the collector listens 
 - Configure the database path, bind IP, UDP/TCP ports, and language. Windows also supports starting automatically when the user signs in.
 
 **First launch with an existing database:** version 2.6.0 preserves existing data and prepares counters and the search index in the background, in batches that resume after an application restart. Log collection and the dashboard remain active; only text search and retention cleanup wait for preparation to finish. The index uses additional space inside the same `.db` file; no permanent second database is created.
+
+### What's new in version 2.6.2
+
+- Search returns up to **100 rows per page**, newest first, and keeps the existing single-day date filter.
+- The UI shows the current page and whether more results remain instead of blocking while counting millions of matches, reducing wait time for broad searches.
+- The fast path uses FTS5 without temporarily sorting all matches; periodic dashboard refresh also avoids a full count. The API keeps its traditional response by default and supports fast mode with `fast=true`.
+
+See the [2.6.2 release notes](CHANGELOG.md#262--2026-10-29).
 
 ### What's new in 2.6.1
 
