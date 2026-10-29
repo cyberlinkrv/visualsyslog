@@ -10,7 +10,7 @@ def test_dashboard_and_retention_api(tmp_path):
         page = client.get("/")
         assert page.status_code == 200
         assert "VisualSyslog" in page.text
-        assert "VisualSyslog 2.6.1" in page.text
+        assert "VisualSyslog 2.6.2" in page.text
         stats = client.get("/api/stats").json()
         assert stats["retention_days"] == 1095
         assert stats["performance_ready"] is True
@@ -173,6 +173,9 @@ def test_search_api_returns_precise_message_matches(tmp_path):
         assert data["total"] == 1
         assert len(data["items"]) == 1
         assert "10.20.30.40" in data["items"][0]["message"]
+        assert "raw" in data["items"][0]  # Keep the existing API default for other clients.
+        compact = client.get("/api/messages", params={"search": "10.20.30.40", "include_raw": "false"})
+        assert compact.status_code == 200 and "raw" not in compact.json()["items"][0]
         assert client.get("/api/messages", params={"search": '"connection from 10.20.30.40"'}).json()["total"] == 1
         assert client.get("/api/messages", params={"search": "x" * 201}).status_code == 422
 
@@ -239,8 +242,31 @@ def test_search_api_reports_when_fts_index_is_building(tmp_path):
         app.state.store._set_index_state(ready=True, progress=100)
 
 
+def test_search_api_accepts_optional_date_and_rejects_invalid_date(tmp_path):
+    from visualsyslog.server import parse_syslog
 
-def test_fast_search_api_caps_page_at_100_and_skips_total_count(tmp_path):
+    app = create_app(data_dir=tmp_path, udp_host="127.0.0.1", udp_port=0,
+                     tcp_host="127.0.0.1", tcp_port=0)
+    with TestClient(app) as client:
+        store = app.state.store
+        for message, timestamp in [
+            ("target older", "2025-05-01T23:59:59.999+00:00"),
+            ("target day", "2025-05-02T00:00:00.000+00:00"),
+        ]:
+            store.insert(parse_syslog(message, "192.0.2.1", "UDP"))
+            with store.lock, store.db:
+                store.db.execute("UPDATE messages SET received_at=? WHERE message=?", (timestamp, message))
+        without_date = client.get("/api/messages", params={"search": "target"})
+        with_date = client.get("/api/messages", params={"search": "target", "date": "2025-05-02"})
+        invalid = client.get("/api/messages", params={"search": "target", "date": "not-a-date"})
+        assert without_date.status_code == 200 and without_date.json()["total"] == 2
+        assert with_date.status_code == 200 and with_date.json()["total"] == 1
+        assert with_date.json()["items"][0]["message"] == "target day"
+        assert invalid.status_code == 422
+
+
+
+def test_fast_search_returns_100_rows_without_total_or_raw_payload(tmp_path):
     from visualsyslog.server import parse_syslog
 
     app = create_app(data_dir=tmp_path, udp_host="127.0.0.1", udp_port=0,
@@ -249,39 +275,35 @@ def test_fast_search_api_caps_page_at_100_and_skips_total_count(tmp_path):
         for i in range(115):
             app.state.store.insert(parse_syslog(f"needle event {i}", f"192.0.2.{i % 200 + 1}", "UDP"))
         with app.state.store.db:
-            app.state.store.db.execute(
-                "UPDATE messages SET received_at='2026-10-29T12:00:00.000+00:00'"
-            )
+            app.state.store.db.execute("UPDATE messages SET received_at='2026-10-29T12:00:00.000+00:00'")
+        statements = []
+        app.state.store.db.set_trace_callback(statements.append)
         response = client.get("/api/messages", params={
             "search": "needle", "fast": "true", "limit": 1000,
-            "date_from": "2026-10-29", "date_to": "2026-10-29",
+            "date": "2026-10-29", "include_raw": "false",
         })
+        app.state.store.db.set_trace_callback(None)
         assert response.status_code == 200, response.text
         payload = response.json()
         assert len(payload["items"]) == 100
-        assert payload["has_more"] is True
-        assert payload["total"] is None
-        invalid = client.get("/api/messages", params={
-            "search": "needle", "fast": "true", "date_from": "2026-10-30", "date_to": "2026-10-29",
+        assert payload["has_more"] is True and payload["total"] is None
+        assert "raw" not in payload["items"][0]
+        assert not any("COUNT(" in sql.upper() for sql in statements)
+
+        response = client.get("/api/messages", params={
+            "fast": "true", "limit": 200, "include_raw": "false",
         })
-        assert invalid.status_code == 422
+        assert response.status_code == 200
+        assert response.json()["total"] is None
+        assert len(response.json()["items"]) == 115
 
 
-
-def test_fast_dashboard_stream_does_not_count_all_messages(tmp_path):
-    from visualsyslog.server import parse_syslog
-
+def test_search_ui_uses_100_row_pages_and_fast_mode(tmp_path):
     app = create_app(data_dir=tmp_path, udp_host="127.0.0.1", udp_port=0,
                      tcp_host="127.0.0.1", tcp_port=0)
     with TestClient(app) as client:
-        for i in range(4):
-            app.state.store.insert(parse_syslog(f"recent event {i}", f"192.0.2.{i + 1}", "UDP"))
-        statements = []
-        app.state.store.db.set_trace_callback(statements.append)
-        response = client.get("/api/messages", params={"limit": 200, "fast": "true"})
-        app.state.store.db.set_trace_callback(None)
-        assert response.status_code == 200
-        assert len(response.json()["items"]) == 4
-        assert response.json()["total"] is None
-        assert not any("COUNT(*) FROM messages" in sql for sql in statements)
-        assert any("ORDER BY id DESC LIMIT 200" in sql for sql in statements)
+        page = client.get("/").text
+        assert "const searchLimit=100" in page
+        assert "fast:'true'" in page
+        assert "searchPageSummary" in page
+        assert 'id="searchDate"' in page and 'id="searchModalDate"' in page

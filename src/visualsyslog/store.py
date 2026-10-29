@@ -6,6 +6,7 @@ import sqlite3
 import threading
 import time
 import uuid
+import zlib
 from collections import Counter
 from datetime import datetime, timedelta, timezone
 from functools import lru_cache
@@ -19,8 +20,35 @@ def _compile_search_pattern(pattern: str):
     return re.compile(pattern, re.IGNORECASE)
 
 
+_RAW_COMPRESSION_PREFIX = b"\x00VSYSLOG-Z1\x00"
+
+
+def _raw_text(value):
+    if value is None:
+        return None
+    if isinstance(value, memoryview):
+        value = value.tobytes()
+    if isinstance(value, bytes):
+        if value.startswith(_RAW_COMPRESSION_PREFIX):
+            value = zlib.decompress(value[len(_RAW_COMPRESSION_PREFIX):])
+        return value.decode("utf-8", errors="replace")
+    return str(value)
+
+
+def _encode_raw(value: str):
+    text = str(value)
+    data = text.encode("utf-8")
+    if len(data) < 96:
+        return text
+    compressed = zlib.compress(data, level=1)
+    if len(compressed) + len(_RAW_COMPRESSION_PREFIX) <= len(data) * 0.9:
+        return _RAW_COMPRESSION_PREFIX + compressed
+    return text
+
+
 def _regexp(pattern: str, value: str | None) -> int:
-    return int(value is not None and _compile_search_pattern(pattern).search(str(value)) is not None)
+    text = _raw_text(value)
+    return int(text is not None and _compile_search_pattern(pattern).search(text) is not None)
 
 
 def _search_terms(search: str) -> list[tuple[str, bool]]:
@@ -69,6 +97,7 @@ class LogStore:
                    if self.in_memory else self._connect(self.path))
         self.db.row_factory = sqlite3.Row
         self.db.create_function("REGEXP", 2, _regexp, deterministic=True)
+        self.db.create_function("RAW_TEXT", 1, _raw_text, deterministic=True)
         self.db.executescript("""
             CREATE TABLE IF NOT EXISTS messages (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -108,6 +137,7 @@ class LogStore:
         db = sqlite3.connect(path, check_same_thread=False, timeout=10)
         db.row_factory = sqlite3.Row
         db.create_function("REGEXP", 2, _regexp, deterministic=True)
+        db.create_function("RAW_TEXT", 1, _raw_text, deterministic=True)
         db.execute("PRAGMA journal_mode=WAL")
         db.execute("PRAGMA synchronous=NORMAL")
         db.execute("PRAGMA busy_timeout=10000")
@@ -164,56 +194,94 @@ class LogStore:
         return str(row[0]) if row else default
 
     def _initialize_search_index(self) -> None:
+        """Create or upgrade the compact, resumable FTS5 index without touching messages."""
         try:
-            self.db.execute("""CREATE VIRTUAL TABLE IF NOT EXISTS messages_fts USING fts5(
-                message,raw,hostname,source_ip,app_name,content='messages',content_rowid='id',
-                tokenize='unicode61 remove_diacritics 0'
-            )""")
-            self.db.executescript("""
-                CREATE TRIGGER IF NOT EXISTS messages_fts_insert AFTER INSERT ON messages BEGIN
-                    INSERT INTO messages_fts(rowid,message,raw,hostname,source_ip,app_name)
-                    VALUES(new.id,new.message,new.raw,new.hostname,new.source_ip,new.app_name);
-                END;
-                CREATE TRIGGER IF NOT EXISTS messages_fts_delete AFTER DELETE ON messages BEGIN
-                    INSERT INTO messages_fts(messages_fts,rowid,message,raw,hostname,source_ip,app_name)
-                    VALUES('delete',old.id,old.message,old.raw,old.hostname,old.source_ip,old.app_name);
-                END;
-                CREATE TRIGGER IF NOT EXISTS messages_fts_update AFTER UPDATE ON messages BEGIN
-                    INSERT INTO messages_fts(messages_fts,rowid,message,raw,hostname,source_ip,app_name)
-                    VALUES('delete',old.id,old.message,old.raw,old.hostname,old.source_ip,old.app_name);
-                    INSERT INTO messages_fts(rowid,message,raw,hostname,source_ip,app_name)
-                    VALUES(new.id,new.message,new.raw,new.hostname,new.source_ip,new.app_name);
-                END;
-            """)
-            self.db.commit()
-            self._fts_available = True
-        except sqlite3.OperationalError as exc:
-            self._set_index_state(error=f"FTS5 indisponível: {exc}")
-            return
+            # Serialize schema changes and the initial high-water mark with other app
+            # instances. New messages after this snapshot are indexed by the triggers.
+            self.db.execute("BEGIN IMMEDIATE")
+            schema_version = self._setting(self.db, "search_index_schema")
+            table_exists = self.db.execute(
+                "SELECT 1 FROM sqlite_master WHERE type='table' AND name='messages_fts'"
+            ).fetchone() is not None
+            if schema_version != "2" or not table_exists:
+                # The previous index stored message, raw, hostname, source_ip and app_name.
+                # raw already contains the complete received payload, so raw + source_ip
+                # preserve searchable text while avoiding redundant postings. Messages stay.
+                self.db.execute("DROP TRIGGER IF EXISTS messages_fts_insert")
+                self.db.execute("DROP TRIGGER IF EXISTS messages_fts_delete")
+                self.db.execute("DROP TRIGGER IF EXISTS messages_fts_update")
+                self.db.execute("DROP TABLE IF EXISTS messages_fts")
+                tokenizer_quote = chr(39)
+                tokenizer = ("tokenize=" + tokenizer_quote + "unicode61 remove_diacritics 0 tokenchars "
+                             + tokenizer_quote * 2 + "_" + tokenizer_quote * 3)
+                self.db.execute("CREATE VIRTUAL TABLE messages_fts USING fts5(raw,source_ip,content='',"
+                                + tokenizer + ")")
+                self.db.execute("INSERT OR REPLACE INTO settings(key,value) VALUES('search_index_schema','2')")
+                self.db.execute("DELETE FROM settings WHERE key IN ('search_index_v1','search_index_v2',"
+                                "'search_index_cursor','search_index_max_id')")
 
-        if self._setting(self.db, "search_index_v1") == "1":
-            self._set_index_state(ready=True, progress=100)
-            return
-        try:
-            max_id = int(self.db.execute("SELECT COALESCE(MAX(id),0) FROM messages").fetchone()[0])
-            if max_id == 0:
-                with self.db:
-                    self.db.execute("INSERT OR REPLACE INTO settings(key,value) VALUES('search_index_v1','1')")
-                    self.db.execute("DELETE FROM settings WHERE key='search_index_cursor'")
+            # IF NOT EXISTS keeps live triggers intact on ordinary restarts. During the
+            # initial migration the old triggers were dropped above, so these are replaced.
+            self.db.execute("""CREATE TRIGGER IF NOT EXISTS messages_fts_insert AFTER INSERT ON messages
+                WHEN COALESCE((SELECT value FROM settings WHERE key='search_index_v2'),'0')='1'
+                  OR ((SELECT value FROM settings WHERE key='search_index_max_id') IS NOT NULL
+                      AND new.id > CAST((SELECT value FROM settings WHERE key='search_index_max_id') AS INTEGER))
+                BEGIN
+                    INSERT INTO messages_fts(rowid,raw,source_ip)
+                    VALUES(new.id,RAW_TEXT(new.raw),new.source_ip);
+                END""")
+            self.db.execute("""CREATE TRIGGER IF NOT EXISTS messages_fts_delete AFTER DELETE ON messages
+                WHEN COALESCE((SELECT value FROM settings WHERE key='search_index_v2'),'0')='1'
+                  OR ((SELECT value FROM settings WHERE key='search_index_max_id') IS NOT NULL
+                      AND (old.id <= CAST(COALESCE((SELECT value FROM settings WHERE key='search_index_cursor'),'0') AS INTEGER)
+                           OR old.id > CAST((SELECT value FROM settings WHERE key='search_index_max_id') AS INTEGER)))
+                BEGIN
+                    INSERT INTO messages_fts(messages_fts,rowid,raw,source_ip)
+                    VALUES('delete',old.id,RAW_TEXT(old.raw),old.source_ip);
+                END""")
+            self.db.execute("""CREATE TRIGGER IF NOT EXISTS messages_fts_update AFTER UPDATE ON messages BEGIN
+                    INSERT INTO messages_fts(messages_fts,rowid,raw,source_ip)
+                    SELECT 'delete',old.id,RAW_TEXT(old.raw),old.source_ip
+                    WHERE COALESCE((SELECT value FROM settings WHERE key='search_index_v2'),'0')='1'
+                       OR ((SELECT value FROM settings WHERE key='search_index_max_id') IS NOT NULL
+                           AND (old.id <= CAST(COALESCE((SELECT value FROM settings WHERE key='search_index_cursor'),'0') AS INTEGER)
+                                OR old.id > CAST((SELECT value FROM settings WHERE key='search_index_max_id') AS INTEGER)));
+                    INSERT INTO messages_fts(rowid,raw,source_ip)
+                    SELECT new.id,RAW_TEXT(new.raw),new.source_ip
+                    WHERE COALESCE((SELECT value FROM settings WHERE key='search_index_v2'),'0')='1'
+                       OR ((SELECT value FROM settings WHERE key='search_index_max_id') IS NOT NULL
+                           AND (new.id <= CAST(COALESCE((SELECT value FROM settings WHERE key='search_index_cursor'),'0') AS INTEGER)
+                                OR new.id > CAST((SELECT value FROM settings WHERE key='search_index_max_id') AS INTEGER)));
+                END""")
+
+            if self._setting(self.db, "search_index_v2") == "1":
+                self.db.commit()
+                self._fts_available = True
                 self._set_index_state(ready=True, progress=100)
                 return
-            saved_max = self._setting(self.db, "search_index_max_id")
-            self._index_max_id = int(saved_max) if saved_max else max_id
-            if not saved_max:
-                with self.db:
-                    self.db.execute("INSERT OR REPLACE INTO settings(key,value) VALUES('search_index_max_id',?)",
-                                    (str(self._index_max_id),))
+
+            max_id = int(self.db.execute("SELECT COALESCE(MAX(id),0) FROM messages").fetchone()[0])
+            if max_id == 0:
+                self.db.execute("INSERT OR REPLACE INTO settings(key,value) VALUES('search_index_v2','1')")
+                self.db.execute("DELETE FROM settings WHERE key IN ('search_index_cursor','search_index_max_id')")
+                self.db.commit()
+                self._fts_available = True
+                self._set_index_state(ready=True, progress=100)
+                return
+            self.db.execute("INSERT OR IGNORE INTO settings(key,value) VALUES('search_index_max_id',?)",
+                            (str(max_id),))
+            self._index_max_id = int(self._setting(self.db, "search_index_max_id", str(max_id)))
             cursor = int(self._setting(self.db, "search_index_cursor", "0") or 0)
-            self._set_index_state(ready=False, progress=min(99, int(cursor * 100 / max_id)))
+            self.db.commit()
+            self._fts_available = True
+            self._set_index_state(ready=False, progress=min(99, int(cursor * 100 / max(1,self._index_max_id))))
             if self.in_memory:
-                self._build_search_index_once(self.db, max_id, cursor)
+                self._build_search_index_once(self.db, self._index_max_id, cursor)
         except sqlite3.Error as exc:
-            self._set_index_state(error=str(exc))
+            if self.db.in_transaction:
+                self.db.rollback()
+            self._fts_available = False
+            self._set_index_state(error=f"FTS5 indisponível: {exc}")
 
     def _set_index_state(self, *, ready: bool | None = None, progress: int | None = None,
                          error: str | None = None) -> None:
@@ -225,15 +293,14 @@ class LogStore:
             self._fts_error = error
 
     def _build_search_index_once(self, db: sqlite3.Connection, max_id: int, cursor: int) -> None:
-        rows = db.execute("""SELECT id,message,raw,hostname,source_ip,app_name FROM messages
+        rows = db.execute("""SELECT id,raw,source_ip FROM messages
                              WHERE id>? AND id<=? ORDER BY id""", (cursor, max_id)).fetchall()
         with db:
-            db.executemany("""INSERT INTO messages_fts(rowid,message,raw,hostname,source_ip,app_name)
-                              VALUES(?,?,?,?,?,?)""",
-                           [(r["id"],r["message"],r["raw"],r["hostname"],r["source_ip"],r["app_name"])
-                            for r in rows])
-            db.execute("INSERT OR REPLACE INTO settings(key,value) VALUES('search_index_v1','1')")
-            db.execute("DELETE FROM settings WHERE key='search_index_cursor'")
+            db.executemany("""INSERT INTO messages_fts(rowid,raw,source_ip)
+                              VALUES(?,?,?)""",
+                           [(r["id"],_raw_text(r["raw"]),r["source_ip"]) for r in rows])
+            db.execute("INSERT OR REPLACE INTO settings(key,value) VALUES('search_index_v2','1')")
+            db.execute("DELETE FROM settings WHERE key IN ('search_index_cursor','search_index_max_id')")
         self._set_index_state(ready=True, progress=100)
 
     def _start_search_index(self) -> None:
@@ -251,6 +318,7 @@ class LogStore:
         try:
             db = sqlite3.connect(self.path, timeout=10)
             db.row_factory = sqlite3.Row
+            db.create_function("RAW_TEXT", 1, _raw_text, deterministic=True)
             db.execute("PRAGMA busy_timeout=10000")
             db.execute("PRAGMA cache_size=-8192")
             db.execute("PRAGMA temp_store=MEMORY")
@@ -261,25 +329,46 @@ class LogStore:
             max_id = self._index_max_id
             cursor = int(self._setting(db, "search_index_cursor", "0") or 0)
             while not self._index_stop.is_set():
-                rows = db.execute("""SELECT id,message,raw,hostname,source_ip,app_name FROM messages
-                                     WHERE id>? AND id<=? ORDER BY id LIMIT 500""",
-                                  (cursor,max_id)).fetchall()
-                if not rows:
-                    with db:
-                        db.execute("INSERT OR REPLACE INTO settings(key,value) VALUES('search_index_v1','1')")
+                # Acquire the writer lock before reading source rows. This prevents an
+                # UPDATE from changing a row between SELECT and FTS insertion: the
+                # message trigger then runs after commit and replaces the indexed terms.
+                try:
+                    db.execute("BEGIN IMMEDIATE")
+                except sqlite3.OperationalError as exc:
+                    if "locked" in str(exc).lower() and not self._index_stop.is_set():
+                        time.sleep(0.1)
+                        continue
+                    raise
+                try:
+                    # Another process may have completed a batch since this worker's
+                    # previous iteration. Always resume from the durable cursor.
+                    if self._setting(db, "search_index_v2") == "1":
+                        db.commit()
+                        self._set_index_state(ready=True, progress=100)
+                        return
+                    max_id = int(self._setting(db, "search_index_max_id", str(max_id)))
+                    cursor = int(self._setting(db, "search_index_cursor", "0") or 0)
+                    rows = db.execute("""SELECT id,raw,source_ip FROM messages
+                                         WHERE id>? AND id<=? ORDER BY id LIMIT 500""",
+                                      (cursor,max_id)).fetchall()
+                    if not rows:
+                        db.execute("INSERT OR REPLACE INTO settings(key,value) VALUES('search_index_v2','1')")
                         db.execute("DELETE FROM settings WHERE key IN ('search_index_cursor','search_index_max_id')")
-                    self._set_index_state(ready=True, progress=100)
-                    return
-                next_cursor = int(rows[-1]["id"])
-                with db:
-                    db.executemany("""INSERT INTO messages_fts(rowid,message,raw,hostname,source_ip,app_name)
-                                      VALUES(?,?,?,?,?,?)""",
-                                   [(r["id"],r["message"],r["raw"],r["hostname"],r["source_ip"],r["app_name"])
-                                    for r in rows])
+                        db.commit()
+                        self._set_index_state(ready=True, progress=100)
+                        return
+                    next_cursor = int(rows[-1]["id"])
+                    db.executemany("""INSERT INTO messages_fts(rowid,raw,source_ip)
+                                      VALUES(?,?,?)""",
+                                   [(r["id"],_raw_text(r["raw"]),r["source_ip"]) for r in rows])
                     db.execute("INSERT OR REPLACE INTO settings(key,value) VALUES('search_index_cursor',?)",
                                (str(next_cursor),))
+                    db.commit()
+                except Exception:
+                    db.rollback()
+                    raise
                 cursor = next_cursor
-                self._set_index_state(progress=min(99, int(cursor * 100 / max_id)))
+                self._set_index_state(progress=min(99, int(cursor * 100 / max(1,max_id))))
                 time.sleep(0.01)
         except (sqlite3.Error, OSError) as exc:
             self._set_index_state(error=str(exc))
@@ -410,20 +499,18 @@ class LogStore:
             cur = self.db.execute("""INSERT INTO messages
               (received_at,event_at,facility,severity,hostname,app_name,source_ip,protocol,message,raw)
               VALUES(?,?,?,?,?,?,?,?,?,?)""", (received,item.get("event_at"),item.get("facility"),item.get("severity"),
-              item.get("hostname"),item.get("app_name"),item["source_ip"],item["protocol"],item["message"],item["raw"]))
+              item.get("hostname"),item.get("app_name"),item["source_ip"],item["protocol"],item["message"],_encode_raw(item["raw"])))
             if received[:10] == self._stats_day:
                 self._stats_today += 1
             return int(cur.lastrowid)
 
     @staticmethod
-    def _patterns(search: str, use_fts: bool = False) -> list[str]:
+    def _patterns(search: str, *, skip_fts_safe_terms: bool = False) -> list[str]:
         patterns = []
         for term, exact_phrase in _search_terms(search):
             if not term:
                 continue
-            simple_token = r"[^\W_]+"
-            if use_fts and (re.fullmatch(simple_token, term) or (exact_phrase and re.fullmatch(rf"{simple_token}(?:\s+{simple_token})*", term))):
-                # FTS5 already enforces whole-token and quoted-phrase matching.
+            if skip_fts_safe_terms and not exact_phrase and term.isascii() and term.isalnum():
                 continue
             pattern = re.escape(term)
             if exact_phrase:
@@ -437,7 +524,13 @@ class LogStore:
         return patterns
 
     def _list_query(self, limit: int, offset: int, patterns: list[str], severity: int | None,
-                    expression: str | None, use_fts: bool):
+                    expression: str | None, use_fts: bool, received_date: str | None,
+                    include_raw: bool):
+        selected_columns = ("messages.id,messages.received_at,messages.event_at,messages.facility,"
+                            "messages.severity,messages.hostname,messages.app_name,messages.source_ip,"
+                            "messages.protocol,messages.message")
+        if include_raw:
+            selected_columns += ",messages.raw"
         clauses = []
         params = []
         from_sql = "messages"
@@ -446,89 +539,142 @@ class LogStore:
             clauses.append("messages_fts MATCH ?")
             params.append(expression)
         for pattern in patterns:
-            clauses.append("(messages.message REGEXP ? OR messages.raw REGEXP ? OR messages.hostname REGEXP ? OR messages.source_ip REGEXP ? OR messages.app_name REGEXP ?)")
-            params.extend([pattern] * 5)
+            clauses.append("(messages.raw REGEXP ? OR messages.source_ip REGEXP ?)")
+            params.extend([pattern] * 2)
         if severity is not None:
-            clauses.append("severity=?")
+            clauses.append("messages.severity=?")
             params.append(int(severity))
+        if received_date:
+            day = datetime.strptime(received_date, "%Y-%m-%d").date()
+            next_day = day + timedelta(days=1)
+            clauses.append("messages.received_at>=? AND messages.received_at<?")
+            params.extend((day.isoformat(), next_day.isoformat()))
         where = " WHERE " + " AND ".join(clauses) if clauses else ""
-        rows = self.db.execute(f"SELECT messages.* FROM {from_sql}{where} ORDER BY messages.id DESC LIMIT ? OFFSET ?",
-                               (*params,limit,offset)).fetchall()
-        total = self.db.execute(f"SELECT COUNT(*) FROM {from_sql}{where}",params).fetchone()[0]
+        if not clauses:
+            # The live dashboard requests this unfiltered page every two seconds.
+            # Avoid a window count over every message; use the incremental counter
+            # when available and keep the legacy count only during counter migration.
+            rows = self.db.execute(
+                f"SELECT {selected_columns} FROM messages ORDER BY messages.id DESC LIMIT ? OFFSET ?",
+                (limit, offset)
+            ).fetchall()
+            if self._metrics_ready:
+                count_row = self.db.execute(
+                    "SELECT value FROM performance_counters WHERE key='messages'"
+                ).fetchone()
+                total = int(count_row[0]) if count_row else 0
+            else:
+                total = int(self.db.execute("SELECT COUNT(*) FROM messages").fetchone()[0])
+            return rows, total
+        # Return filtered pages and their total in one pass. The previous implementation
+        # evaluated the same FTS/REGEXP predicates once for the page and again
+        # for COUNT(*), doubling work on large databases.
+        rows = self.db.execute(
+            f"SELECT {selected_columns},COUNT(*) OVER() AS __total FROM {from_sql}{where} "
+            "ORDER BY messages.id DESC LIMIT ? OFFSET ?", (*params, limit, offset)
+        ).fetchall()
+        if rows:
+            total = int(rows[0]["__total"])
+        elif offset:
+            # An out-of-range page has no row from which to read the window count.
+            total = int(self.db.execute(f"SELECT COUNT(*) FROM {from_sql}{where}", params).fetchone()[0])
+        else:
+            total = 0
         return rows,total
 
-    def list_messages(self, limit=200, offset=0, search="", severity=None):
+    def list_messages(self, limit=200, offset=0, search="", severity=None, received_date=None,
+                      include_raw=True):
         limit = max(1,min(int(limit),1000))
         offset = max(0,int(offset))
         expression = _fts_query(search) if search else None
         with self.lock:
             use_fts = self._fts_available and self._fts_ready and expression is not None
-            patterns = self._patterns(search, use_fts)
+            patterns = self._patterns(search, skip_fts_safe_terms=use_fts)
             try:
-                rows,total = self._list_query(limit,offset,patterns,severity,expression,use_fts)
+                rows,total = self._list_query(limit,offset,patterns,severity,expression,use_fts,received_date,include_raw)
             except sqlite3.OperationalError:
                 if not use_fts:
                     raise
-                rows,total = self._list_query(limit,offset,self._patterns(search, False),severity,None,False)
-        return [dict(r) for r in rows],int(total)
+                fallback_patterns = self._patterns(search)
+                rows,total = self._list_query(limit,offset,fallback_patterns,severity,None,False,received_date,include_raw)
+        items = []
+        for row in rows:
+            item = {key: value for key, value in dict(row).items() if key != "__total"}
+            if "raw" in item:
+                item["raw"] = _raw_text(item["raw"])
+            items.append(item)
+        return items,int(total)
 
-    def latest_messages(self, limit=200, offset=0):
-        """Read recent rows for dashboard refresh without recounting the database."""
+    def latest_messages(self, limit=200, offset=0, include_raw=False):
+        """Return the recent dashboard rows without a database-wide count."""
         limit = max(1, min(int(limit), 1000))
         offset = max(0, int(offset))
+        selected = ("id,received_at,event_at,facility,severity,hostname,app_name,source_ip,protocol,message")
+        if include_raw:
+            selected += ",raw"
         with self.lock:
             rows = self.db.execute(
-                "SELECT * FROM messages ORDER BY id DESC LIMIT ? OFFSET ?", (limit, offset)
+                f"SELECT {selected} FROM messages ORDER BY id DESC LIMIT ? OFFSET ?",
+                (limit, offset),
             ).fetchall()
-        return [dict(row) for row in rows]
+        items = [dict(row) for row in rows]
+        if include_raw:
+            for item in items:
+                item["raw"] = _raw_text(item["raw"])
+        return items
 
     def search_page(self, limit=100, offset=0, search="", severity=None,
-                    date_from=None, date_to=None):
-        """Return one recent-first search page without counting every match."""
+                    received_date=None, include_raw=False):
+        """Return one recent-first result page and a continuation flag, not an exact count."""
         limit = max(1, min(int(limit), 100))
         offset = max(0, int(offset))
         expression = _fts_query(search) if search else None
+        selected = ("messages.id,messages.received_at,messages.event_at,messages.facility,"
+                    "messages.severity,messages.hostname,messages.app_name,messages.source_ip,"
+                    "messages.protocol,messages.message")
+        if include_raw:
+            selected += ",messages.raw"
 
-        def fetch_page(use_fts: bool):
-            patterns = self._patterns(search, use_fts)
+        def execute_page(use_fts, patterns):
             clauses, params = [], []
-            from_sql = "messages"
-            order = "messages.id DESC"
+            from_sql, order = "messages", "messages.id DESC"
             if use_fts:
                 from_sql = "messages JOIN messages_fts ON messages_fts.rowid=messages.id"
                 clauses.append("messages_fts MATCH ?")
                 params.append(expression)
-                # FTS5 can emit matching rowids newest-first without a temporary sort.
+                # FTS5 rowid DESC avoids a temporary sort of all matching rows.
                 order = "messages_fts.rowid DESC"
             for pattern in patterns:
-                clauses.append("(messages.message REGEXP ? OR messages.raw REGEXP ? OR messages.hostname REGEXP ? OR messages.source_ip REGEXP ? OR messages.app_name REGEXP ?)")
-                params.extend([pattern] * 5)
+                clauses.append("(messages.raw REGEXP ? OR messages.source_ip REGEXP ?)")
+                params.extend((pattern, pattern))
             if severity is not None:
                 clauses.append("messages.severity=?")
                 params.append(int(severity))
-            if date_from is not None:
-                clauses.append("messages.received_at>=?")
-                params.append(f"{date_from.isoformat()}T00:00:00.000+00:00")
-            if date_to is not None:
-                next_day = date_to + timedelta(days=1)
-                clauses.append("messages.received_at<?")
-                params.append(f"{next_day.isoformat()}T00:00:00.000+00:00")
+            if received_date:
+                day = datetime.strptime(received_date, "%Y-%m-%d").date()
+                next_day = day + timedelta(days=1)
+                clauses.append("messages.received_at>=? AND messages.received_at<?")
+                params.extend((day.isoformat(), next_day.isoformat()))
             where = " WHERE " + " AND ".join(clauses) if clauses else ""
             return self.db.execute(
-                f"SELECT messages.* FROM {from_sql}{where} ORDER BY {order} LIMIT ? OFFSET ?",
+                f"SELECT {selected} FROM {from_sql}{where} ORDER BY {order} LIMIT ? OFFSET ?",
                 (*params, limit + 1, offset),
             ).fetchall()
 
         with self.lock:
             use_fts = self._fts_available and self._fts_ready and expression is not None
             try:
-                rows = fetch_page(use_fts)
+                rows = execute_page(use_fts, self._patterns(search, skip_fts_safe_terms=use_fts))
             except sqlite3.OperationalError:
                 if not use_fts:
                     raise
-                rows = fetch_page(False)
+                rows = execute_page(False, self._patterns(search))
         has_more = len(rows) > limit
-        return [dict(row) for row in rows[:limit]], has_more
+        items = [dict(row) for row in rows[:limit]]
+        if include_raw:
+            for item in items:
+                item["raw"] = _raw_text(item["raw"])
+        return items, has_more
 
     def stats(self):
         with self.lock:
